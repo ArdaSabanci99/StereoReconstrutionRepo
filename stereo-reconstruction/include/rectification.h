@@ -1,6 +1,7 @@
 #pragma once
 #include <opencv2/opencv.hpp>
 #include "utils.h"
+#include "sparse_matching.h"
 
 struct RectifyResult {
     cv::Mat left_rect;

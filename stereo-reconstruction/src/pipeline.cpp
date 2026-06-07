@@ -6,7 +6,7 @@
 
 static void printUsage(const char* name) {
     std::cerr << "Usage: " << name << " <scene_dir> [options]\n"
-              << "  --method  bm|sgbm|sad|ssd|ncc   (default: sgbm)\n"
+              << "  --method  bm|sgbm|sad|ssd|ncc|sgm   (default: sgbm)\n"
               << "  --manual-rect                    (use manual rectification)\n"
               << "  --window  <size>                 (default: 5)\n"
               << "  --disps   <num_disparities>      (default: from calib.txt)\n";
@@ -32,6 +32,7 @@ int main(int argc, char** argv) {
             else if (m == "sad")  mp.method = MatchMethod::MANUAL_SAD;
             else if (m == "ssd")  mp.method = MatchMethod::MANUAL_SSD;
             else if (m == "ncc")  mp.method = MatchMethod::MANUAL_NCC;
+            else if (m == "sgm")  mp.method = MatchMethod::MANUAL_SGM;
         }
         else if (a == "--window" && i+1 < argc) mp.window_size = std::stoi(argv[++i]);
         else if (a == "--disps"  && i+1 < argc) {

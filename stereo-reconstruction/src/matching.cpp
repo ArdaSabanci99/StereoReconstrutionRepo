@@ -97,6 +97,45 @@ static cv::Mat computeNCC(const cv::Mat& left, const cv::Mat& right,
     return disp;
 }
 
+// ── Manual SGM — Semi-Global Matching (Member 3 — C1 challenge) ───────────
+static cv::Mat computeSGM(const cv::Mat& left, const cv::Mat& right,
+                           const MatchParams& p) {
+    // Hirschmüller, "Stereo Processing by Semiglobal Matching and Mutual
+    // Information", PAMI 2008.
+    //
+    // TODO-SGM-1: Per-pixel cost volume using Census transform
+    //   Census encodes the sign pattern of a neighbourhood relative to the
+    //   centre pixel as a bit string, then uses Hamming distance as the cost.
+    //   For each pixel (y,x) build a 5×5 (or 7×7) bitmask:
+    //     uint64_t census(y, x) = 0;
+    //     int bit = 0;
+    //     for (dy, dx) in neighbourhood:
+    //         if left(y+dy, x+dx) < left(y, x): set bit
+    //         ++bit;
+    //   cost_volume[y][x][d] = hamming_distance(census_l(y,x), census_r(y, x-d))
+    //
+    // TODO-SGM-2: Path-cost aggregation over 4 or 8 scan directions
+    //   For each direction r ∈ {←, →, ↑, ↓, ↖, ↗, ↙, ↘}:
+    //     Lr(p, d) = C(p,d) + min(
+    //         Lr(p-r, d),
+    //         Lr(p-r, d-1) + P1,
+    //         Lr(p-r, d+1) + P1,
+    //         min_k Lr(p-r, k) + P2
+    //     ) - min_k Lr(p-r, k)
+    //   Suggested starting values: P1 = 10, P2 = 120.
+    //   Aggregate:  S(p, d) = Σ_r Lr(p, d)
+    //
+    // TODO-SGM-3: Winner-takes-all disparity selection
+    //   disp(p) = argmin_d S(p, d)
+    //
+    // TODO-SGM-4: Post-processing (same as block-matching)
+    //   Left-right consistency check (TODO-B below)
+    //   Median filter + hole filling (TODO-C below)
+
+    std::cout << "[matching] SGM not yet implemented, falling back to SAD.\n";
+    return computeSAD(left, right, p);
+}
+
 // ── TODO: Advanced matching improvements ──────────────────────
 // TODO-A: Sub-pixel refinement
 //   After finding best integer disparity, fit a parabola to cost[d-1], cost[d], cost[d+1]
@@ -155,6 +194,9 @@ cv::Mat computeDisparity(const cv::Mat& left_rect, const cv::Mat& right_rect,
     case MatchMethod::MANUAL_NCC:
         std::cout << "[matching] NCC window=" << params.window_size << "\n";
         return computeNCC(gray_l, gray_r, params);
+    case MatchMethod::MANUAL_SGM:
+        std::cout << "[matching] SGM window=" << params.window_size << "\n";
+        return computeSGM(gray_l, gray_r, params);
     default:
         throw std::runtime_error("Unknown match method");
     }
@@ -173,6 +215,7 @@ int main(int argc, char** argv) {
     if      (method_str == "sad")  params.method = MatchMethod::MANUAL_SAD;
     else if (method_str == "ssd")  params.method = MatchMethod::MANUAL_SSD;
     else if (method_str == "ncc")  params.method = MatchMethod::MANUAL_NCC;
+    else if (method_str == "sgm")  params.method = MatchMethod::MANUAL_SGM;
     else if (method_str == "bm")   params.method = MatchMethod::OPENCV_BM;
     else                           params.method = MatchMethod::OPENCV_SGBM;
 

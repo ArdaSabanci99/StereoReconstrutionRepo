@@ -1,7 +1,8 @@
 #include "rectification.h"
+#include "sparse_matching.h"
 #include <iostream>
 
-// ── OpenCV baseline (DONE) ─────────────────────────────────────
+// ── OpenCV baseline (DONE) ─────────────────────────────────────────────────
 RectifyResult rectifyOpenCV(const cv::Mat& left, const cv::Mat& right,
                              const CalibData& calib) {
     cv::Size img_size(left.cols, left.rows);
@@ -32,35 +33,45 @@ RectifyResult rectifyOpenCV(const cv::Mat& left, const cv::Mat& right,
     return result;
 }
 
-// ── Manual rectification (TODO) ────────────────────────────────
+// ── Manual rectification — Loop & Zhang 1999 (Member 2) ───────────────────
 RectifyResult rectifyManual(const cv::Mat& left, const cv::Mat& right,
                              const CalibData& calib) {
-    // TODO-1: SIFT/ORB keypoint detection on left and right images
-    //   cv::Ptr<cv::SIFT> sift = cv::SIFT::create();
-    //   sift->detectAndCompute(left_gray, ..., keypoints_l, desc_l);
+    // Step 1: Get relative pose from sparse matching (Member 1's output)
+    SparseMatchResult sparse = computeSparseMatches(left, right, calib);
 
-    // TODO-2: Feature matching (BFMatcher or FLANN)
-    //   Keep only good matches (ratio test: distance < 0.75 * second_best)
+    if (sparse.R.empty()) {
+        std::cout << "[rectification] Pose recovery failed, falling back to OpenCV.\n";
+        return rectifyOpenCV(left, right, calib);
+    }
 
-    // TODO-3: Build correspondence matrix for 8-point algorithm
-    //   For each match: row = [x1*x2, x1*y2, x1, y1*x2, y1*y2, y1, x2, y2, 1]
-    //   Stack into Nx9 matrix A, solve with SVD → F (reshape last row of V^T)
-    //   Enforce rank-2: F = U * diag(s1,s2,0) * V^T
+    // TODO-6: Compute rectifying homographies from recovered R and t
+    //
+    //   Option A — use OpenCV stereoRectify with our R, t:
+    //   cv::Size img_size(left.cols, left.rows);
+    //   cv::Mat D0 = cv::Mat::zeros(5, 1, CV_64F);
+    //   cv::Mat D1 = cv::Mat::zeros(5, 1, CV_64F);
+    //   cv::Mat R0, R1, P1, P2, Q;
+    //   cv::stereoRectify(calib.K0, D0, calib.K1, D1,
+    //                     img_size, sparse.R, sparse.t,
+    //                     R0, R1, P1, P2, Q,
+    //                     cv::CALIB_ZERO_DISPARITY, 0);
+    //
+    //   Option B — Loop & Zhang direct homography (see paper):
+    //   Compute epipole e0 in the left image from F:
+    //     SVD(F^T) → e0 is left null-vector (last column of V)
+    //   Build H0 that maps e0 to infinity (projective transform)
+    //   Find H1 minimising vertical disparity via affine correction:
+    //     Ha = argmin Σ ||Ha * H0 * m_l - H1 * m_r||^2
 
-    // TODO-4: Compute Essential matrix from Fundamental matrix
-    //   E = K1^T * F * K0
+    // TODO-7: Warp both images with computed rectification maps
+    //   cv::Mat map0x, map0y, map1x, map1y;
+    //   cv::initUndistortRectifyMap(calib.K0, D0, R0, P1, img_size, CV_32FC1, map0x, map0y);
+    //   cv::initUndistortRectifyMap(calib.K1, D1, R1, P2, img_size, CV_32FC1, map1x, map1y);
+    //   cv::remap(left,  result.left_rect,  map0x, map0y, cv::INTER_LINEAR);
+    //   cv::remap(right, result.right_rect, map1x, map1y, cv::INTER_LINEAR);
+    //   result.Q = Q; result.P1 = P1; result.P2 = P2;
 
-    // TODO-5: Recover R, T from Essential matrix
-    //   cv::recoverPose(E, points_l, points_r, K0, R, T);
-
-    // TODO-6: Compute rectifying homographies (Loop & Zhang 1999)
-    //   cv::stereoRectify(...) with computed R, T
-    //   OR implement homography computation manually
-
-    // TODO-7: Warp both images with computed homographies
-    //   cv::warpPerspective(left, left_rect, H_left, img_size);
-
-    std::cout << "[rectification] Manual not yet implemented, falling back to OpenCV.\n";
+    std::cout << "[rectification] Manual (TODO-6/7) not yet implemented, falling back to OpenCV.\n";
     return rectifyOpenCV(left, right, calib);
 }
 

@@ -36,6 +36,26 @@
 //   For each vertex v_i: v_i_new = (1-lambda)*v_i + lambda * mean(neighbors)
 //   Iterate N times (e.g. 5-20 iterations)
 
+// TODO-G4: Poisson surface reconstruction (requires Open3D)
+//   #include <open3d/Open3D.h>
+//   auto pcd = std::make_shared<open3d::geometry::PointCloud>();
+//   for (auto& p : cloud.points) pcd->points_.emplace_back(p.x, p.y, p.z);
+//
+//   Estimate normals (needed by Poisson):
+//   pcd->EstimateNormals(open3d::geometry::KDTreeSearchParamHybrid(0.1, 30));
+//   pcd->OrientNormalsConsistentTangentPlane(100);
+//
+//   Run screened Poisson reconstruction (depth=9 gives good detail):
+//   auto [mesh, densities] =
+//       open3d::geometry::TriangleMesh::CreateFromPointCloudPoisson(*pcd, /*depth=*/9);
+//
+//   Trim low-density artefacts:
+//   double density_threshold = /* quantile ~0.01 */;
+//   mesh->RemoveVerticesByMask(densities < density_threshold);
+//
+//   Save:
+//   open3d::io::WriteTriangleMesh("results/mesh_poisson.ply", *mesh);
+
 #ifndef PIPELINE_BUILD
 int main(int argc, char** argv) {
     // TODO: implement mesh reconstruction standalone executable
