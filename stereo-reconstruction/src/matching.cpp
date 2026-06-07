@@ -3,6 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <filesystem>
+#include <bitset>
 
 namespace fs = std::filesystem;
 
@@ -90,6 +91,72 @@ static cv::Mat computeNCC(const cv::Mat& left, const cv::Mat& right,
                                         (sumRR - N*meanR*meanR));
                 float ncc = (den < 1e-6f) ? 0.0f : num / den;
                 if (ncc > best_ncc) { best_ncc = ncc; best_d = d; }
+            }
+            disp.at<float>(y, x) = (float)best_d;
+        }
+    }
+    return disp;
+}
+
+// ── Manual Census transform + Hamming cost (Member 3) ─────────────────────
+//
+// Radiometrically robust: only relative orderings within the window matter,
+// so gain/bias changes (different exposures, vignetting) don't affect the cost.
+// Zabih & Woodfill, ECCV 1994.
+
+static cv::Mat censusTransform(const cv::Mat& img) {
+    // 5×5 window (half=2) → 24 bits → fits in uint32_t (stored as CV_32S)
+    // For 7×7 (48 bits) use uint64_t + CV_64F with reinterpret_cast.
+    const int half = 2;
+    cv::Mat census(img.size(), CV_32S, 0);
+    for (int y = half; y < img.rows - half; ++y) {
+        for (int x = half; x < img.cols - half; ++x) {
+            uint32_t code = 0;
+            int bit = 0;
+            uchar center = img.at<uchar>(y, x);
+            for (int dy = -half; dy <= half; ++dy)
+                for (int dx = -half; dx <= half; ++dx) {
+                    if (dy == 0 && dx == 0) continue;
+                    if (img.at<uchar>(y + dy, x + dx) < center)
+                        code |= (1u << bit);
+                    ++bit;
+                }
+            census.at<int>(y, x) = static_cast<int>(code);
+        }
+    }
+    return census;
+}
+
+static int hammingDist(int a, int b) {
+    return (int)std::bitset<32>((unsigned)a ^ (unsigned)b).count();
+}
+
+static cv::Mat computeCensus(const cv::Mat& left, const cv::Mat& right,
+                              const MatchParams& p) {
+    cv::Mat cen_l = censusTransform(left);
+    cv::Mat cen_r = censusTransform(right);
+
+    // Extra border from census window (half=2) + aggregation window
+    const int census_half = 2;
+    const int agg_half    = p.window_size / 2;
+    const int border      = census_half + agg_half;
+
+    cv::Mat disp(left.size(), CV_32F, -1.0f);
+
+    for (int y = border; y < left.rows - border; ++y) {
+        for (int x = border + p.min_disparity + p.num_disparities;
+             x < left.cols - border; ++x) {
+            float best_cost = std::numeric_limits<float>::max();
+            int   best_d    = -1;
+            for (int d = p.min_disparity; d < p.min_disparity + p.num_disparities; ++d) {
+                int xr = x - d;
+                if (xr - border < 0) break;
+                float cost = 0;
+                for (int dy = -agg_half; dy <= agg_half; ++dy)
+                    for (int dx = -agg_half; dx <= agg_half; ++dx)
+                        cost += hammingDist(cen_l.at<int>(y+dy, x+dx),
+                                            cen_r.at<int>(y+dy, xr+dx));
+                if (cost < best_cost) { best_cost = cost; best_d = d; }
             }
             disp.at<float>(y, x) = (float)best_d;
         }
@@ -194,6 +261,9 @@ cv::Mat computeDisparity(const cv::Mat& left_rect, const cv::Mat& right_rect,
     case MatchMethod::MANUAL_NCC:
         std::cout << "[matching] NCC window=" << params.window_size << "\n";
         return computeNCC(gray_l, gray_r, params);
+    case MatchMethod::MANUAL_CENSUS:
+        std::cout << "[matching] Census window=" << params.window_size << "\n";
+        return computeCensus(gray_l, gray_r, params);
     case MatchMethod::MANUAL_SGM:
         std::cout << "[matching] SGM window=" << params.window_size << "\n";
         return computeSGM(gray_l, gray_r, params);
@@ -215,7 +285,8 @@ int main(int argc, char** argv) {
     if      (method_str == "sad")  params.method = MatchMethod::MANUAL_SAD;
     else if (method_str == "ssd")  params.method = MatchMethod::MANUAL_SSD;
     else if (method_str == "ncc")  params.method = MatchMethod::MANUAL_NCC;
-    else if (method_str == "sgm")  params.method = MatchMethod::MANUAL_SGM;
+    else if (method_str == "census") params.method = MatchMethod::MANUAL_CENSUS;
+    else if (method_str == "sgm")    params.method = MatchMethod::MANUAL_SGM;
     else if (method_str == "bm")   params.method = MatchMethod::OPENCV_BM;
     else                           params.method = MatchMethod::OPENCV_SGBM;
 

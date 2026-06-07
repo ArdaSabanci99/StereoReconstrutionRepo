@@ -154,14 +154,15 @@ All outputs go to `results/`.
 
 ## Available Matching Methods
 
-| Flag   | Type    | Status |
-|--------|---------|--------|
-| `bm`   | OpenCV BlockMatching | done |
-| `sgbm` | OpenCV Semi-Global BM | done |
-| `sad`  | Manual Sum of Absolute Differences | done |
-| `ssd`  | Manual Sum of Squared Differences | done |
-| `ncc`  | Manual Normalized Cross-Correlation | done |
-| `sgm`  | Manual Semi-Global Matching | **TODO (C1)** |
+| Flag     | Type    | Status |
+|----------|---------|--------|
+| `bm`     | OpenCV BlockMatching | done |
+| `sgbm`   | OpenCV Semi-Global BM | done |
+| `sad`    | Manual Sum of Absolute Differences | done |
+| `ssd`    | Manual Sum of Squared Differences | done |
+| `ncc`    | Manual Normalized Cross-Correlation | done |
+| `census` | Manual Census transform + Hamming (Zabih & Woodfill 1994) | done |
+| `sgm`    | Manual Semi-Global Matching (Hirschmüller 2008) | **TODO (C1)** |
 
 ---
 

@@ -7,7 +7,8 @@ enum class MatchMethod {
     MANUAL_SSD,   // Sum of Squared Differences (manual)
     MANUAL_SAD,   // Sum of Absolute Differences (manual)
     MANUAL_NCC,   // Normalized Cross-Correlation (manual)
-    MANUAL_SGM,   // Semi-Global Matching — Member 3, C1 challenge
+    MANUAL_CENSUS, // Census transform + Hamming cost — Member 3
+    MANUAL_SGM,    // Semi-Global Matching (uses Census as cost) — Member 3, C1
 };
 
 struct MatchParams {

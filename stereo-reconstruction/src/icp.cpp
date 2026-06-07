@@ -5,18 +5,16 @@
 
 namespace fs = std::filesystem;
 
-// ── ICP alignment (Member 4 — C2 challenge) ───────────────────────────────
-//
-// Uses the same CeresICPOptimizer / LinearICPOptimizer infrastructure as
-// Exercise 5 (ICPOptimizer.h). Toggle USE_LINEAR_ICP and USE_POINT_TO_PLANE
-// to switch between variants.
-
-#define USE_LINEAR_ICP     0   // 0 = Ceres, 1 = linear closed-form
+// Toggle between Ceres (non-linear) and linear closed-form ICP
+#define USE_LINEAR_ICP     0   // 0 = Ceres, 1 = linear (Procrustes)
 #define USE_POINT_TO_PLANE 0   // 0 = point-to-point, 1 = point-to-plane
+
+// ── ICP alignment (Member 4 — C2 challenge) ───────────────────────────────
 
 ICPResult alignICP(const PointCloud& source, const PointCloud& target,
                    int max_iter, double /*tolerance*/) {
     ICPResult result;
+    result.pose = Matrix4f::Identity();
 
     ICPOptimizer* optimizer = nullptr;
     if (USE_LINEAR_ICP)
@@ -32,18 +30,11 @@ ICPResult alignICP(const PointCloud& source, const PointCloud& target,
     optimizer->estimatePose(source, target, pose);
     delete optimizer;
 
-    // Extract R and t from the 4x4 pose matrix
-    cv::Mat R_cv(3, 3, CV_64F), t_cv(3, 1, CV_64F);
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-            R_cv.at<double>(i,j) = pose(i,j);
-    for (int i = 0; i < 3; ++i)
-        t_cv.at<double>(i,0) = pose(i,3);
-
-    result.R          = R_cv;
-    result.t          = t_cv;
-    result.rms_error  = 0;   // TODO: compute final RMS after alignment
+    result.pose       = pose;
     result.iterations = max_iter;
+    // TODO: compute final RMS error after applying pose to source and
+    //       finding nearest-neighbor distances to target
+    result.rms_error  = 0;
     return result;
 }
 
@@ -59,21 +50,18 @@ PointCloud fusePointClouds(const std::vector<PointCloud>& clouds, int max_iter) 
         std::cout << "[ICP] Fusing cloud " << i+1 << "/" << clouds.size() << "\n";
         ICPResult align = alignICP(clouds[i], merged, max_iter);
 
-        // TODO-FUSE: Transform clouds[i] by align.R, align.t and append to merged
-        // for (const auto& p : clouds[i].points) {
-        //     cv::Mat pt = (cv::Mat_<double>(3,1) << p.x(), p.y(), p.z());
-        //     cv::Mat pt_aligned = align.R * pt + align.t;
-        //     merged.points.emplace_back(
-        //         (float)pt_aligned.at<double>(0),
-        //         (float)pt_aligned.at<double>(1),
-        //         (float)pt_aligned.at<double>(2));
-        // }
-        // merged.colors.insert(merged.colors.end(),
-        //                      clouds[i].colors.begin(), clouds[i].colors.end());
+        // TODO-FUSE-1: Apply align.pose to each point in clouds[i] and append
+        //   for (const auto& p : clouds[i].points) {
+        //       Eigen::Vector4f ph(p.x(), p.y(), p.z(), 1.0f);
+        //       Eigen::Vector4f pt = align.pose * ph;
+        //       merged.points.emplace_back(pt.x(), pt.y(), pt.z());
+        //   }
+        //   merged.colors.insert(merged.colors.end(),
+        //                        clouds[i].colors.begin(),
+        //                        clouds[i].colors.end());
 
-        // TODO-FUSE-2: Optional voxel downsampling to reduce density artefacts
-        //   Grid-subsample: divide space into voxels of side voxel_size,
-        //   keep the centroid of each occupied voxel.
+        // TODO-FUSE-2: Voxel downsampling — keep one point per cell of side
+        //   voxel_size to avoid density artefacts after merging.
     }
 
     return merged;
@@ -83,16 +71,17 @@ PointCloud fusePointClouds(const std::vector<PointCloud>& clouds, int max_iter) 
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::cerr << "Usage: icp <cloud1.ply> <cloud2.ply> [cloud3.ply ...]\n"
-                  << "  Outputs results/fused.ply\n";
+                  << "  Outputs results/fused.ply and results/fused.off\n";
         return 1;
     }
 
-    // TODO: Load .ply files, fuse, save
+    // TODO: Load PLY files → fusePointClouds → save
     // std::vector<PointCloud> clouds;
     // for (int i = 1; i < argc; ++i)
-    //     clouds.push_back(loadPointCloud(argv[i]));
+    //     clouds.push_back(loadPointCloud(argv[i]));  // TODO: implement loader
     // PointCloud fused = fusePointClouds(clouds);
-    // savePointCloud(fused, "results/fused.ply");
+    // savePointCloud   (fused, "results/fused.ply");
+    // savePointCloudOFF(fused, "results/fused.off");
 
     std::cout << "[ICP] Standalone not yet fully implemented.\n";
     return 0;
