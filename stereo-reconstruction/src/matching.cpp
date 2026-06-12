@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
         else if (a == "--window" && i+1 < argc) params.window_size     = std::stoi(argv[++i]);
     }
 
-    std::string load_path = "results/scene_" + sceneId + "/rectification";
+    std::string load_path = "results/scene" + sceneId + "/rectification";
     cv::Mat left_rect  = cv::imread(load_path + "/view_" + viewLeftId + ".png");
     cv::Mat right_rect = cv::imread(load_path + "/view_" + viewRightId + ".png");
     if (left_rect.empty() || right_rect.empty()) {
@@ -312,7 +312,7 @@ int main(int argc, char** argv) {
     cv::normalize(disp, disp_vis, 0, 255, cv::NORM_MINMAX, CV_8U);
     cv::applyColorMap(disp_vis, disp_vis, cv::COLORMAP_JET);
     
-    std::string save_path = "results/scene_" + sceneId + "/matching";
+    std::string save_path = "results/scene" + sceneId + "/matching";
     fs::create_directories(save_path);
     cv::imwrite(save_path + "/view_" + viewLeftId + "_" + viewRightId + "_disparity.png", disp_vis);
     saveDisparity(disp, save_path + "/view_" + viewLeftId + "_" + viewRightId + "_disparity_raw.png");

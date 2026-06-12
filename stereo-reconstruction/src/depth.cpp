@@ -186,7 +186,7 @@ int main(int argc, char** argv) {
     DTUDataLoader loader(dataPath.string());
     CalibData calib = loader.loadCalib(viewLeftId, viewRightId);
 
-    std::string load_path = "results/scene_" + sceneId + "/matching";
+    std::string load_path = "results/scene" + sceneId + "/matching";
 
     cv::Mat disp = loadDisparity(load_path + "/view_" + viewLeftId + "_" + viewRightId + "_disparity_raw.png");
     cv::Mat colorImg = cv::imread(load_path + "/view_" + viewLeftId + "_" + viewRightId + "_disparity.png");
