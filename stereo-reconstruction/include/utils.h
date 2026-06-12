@@ -3,25 +3,27 @@
 #include <string>
 #include <filesystem>
 
+
+// TODO: change with DTU
+
 namespace fs = std::filesystem;
 
 struct CalibData {
     cv::Mat K0;        // camera matrix left
     cv::Mat K1;        // camera matrix right
     double baseline;   // in mm
-    double doffs;      // x-difference of principal points
-    int width, height;
-    int ndisp = 256;   // recommended num_disparities from dataset
     int vmin  = 0;     // min valid disparity (for evaluation)
     int vmax  = 255;   // max valid disparity
-};
+    int doffs = 0;  // not used in DTU
 
-// Parse calib.txt from Middlebury 2014 format
-CalibData loadCalib(const fs::path& scene_dir);
+};
 
 // Save/load disparity map as .pfm or .png
 void saveDisparity(const cv::Mat& disp, const fs::path& path);
 cv::Mat loadDisparity(const fs::path& path);
+
+// Format DTU view IDs as three-digit zero-padded strings.
+std::string padViewId(int viewId);
 
 // Print a cv::Mat summary (for debugging)
 void printMatInfo(const std::string& name, const cv::Mat& m);
