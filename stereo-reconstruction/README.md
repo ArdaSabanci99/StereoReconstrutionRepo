@@ -119,7 +119,7 @@ No `calib.txt` file is needed.
 
 ### Full pipeline
 
-All executables take `<data_path> <scene_id> <left_view_id> <right_view_id>` as
+`pipeline` takes `<data_path> <scene_id> <left_view_id> <right_view_id>` as
 the first four positional arguments. View IDs are plain integers and are
 zero-padded automatically.
 
@@ -149,6 +149,10 @@ zero-padded automatically.
 
 ### Individual steps
 
+Most executables take `<data_path> <scene_id> <left_view_id> <right_view_id>` as
+the first four positional arguments. **`matching` is an exception** — it reads
+rectified images from `results/` directly and only needs the scene and view IDs.
+
 ```bash
 # Sparse matching — outputs F, E, R, t to stdout
 ./build/sparse_matching /path/to/dtu 1 1 2
@@ -158,6 +162,7 @@ zero-padded automatically.
 ./build/rectification /path/to/dtu 1 1 2 --manual  # Loop-Zhang
 
 # Dense matching (reads rectified images produced by the rectification step)
+# Usage: ./build/matching <scene_id> <left_view_id> <right_view_id> [method] [options]
 ./build/matching 1 1 2 bm     # OpenCV BlockMatching
 ./build/matching 1 1 2 sgbm   # OpenCV SGBM
 ./build/matching 1 1 2 sad    # Manual SAD
