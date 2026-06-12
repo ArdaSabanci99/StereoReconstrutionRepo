@@ -1,4 +1,5 @@
 #include "sparse_matching.h"
+#include "DataLoader.h"
 #include "Eigen.h"
 #include <opencv2/core/eigen.hpp>   // cv::cv2eigen / cv::eigen2cv
 #include <iostream>
@@ -71,21 +72,36 @@ SparseMatchResult computeSparseMatches(const cv::Mat& left, const cv::Mat& right
     return result;
 }
 
-#ifndef PIPELINE_BUILD
+
+#if !defined(PIPELINE_BUILD) && !defined(BUILDING_RECTIFICATION)
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: sparse_matching <scene_dir>\n";
+    if (argc < 5) {
+        std::cerr << "Usage: sparse_matching <data_path> <scene_id> <left_view_id> <right_view_id> [options]\n"
+                  << "  --light  <light_id>  (default: 0)\n";
         return 1;
     }
-    fs::path scene(argv[1]);
-    CalibData calib = loadCalib(scene);
-    cv::Mat left  = cv::imread((scene / "im0.png").string());
-    cv::Mat right = cv::imread((scene / "im1.png").string());
-    if (left.empty() || right.empty()) {
-        std::cerr << "Could not load images from " << scene << "\n"; return 1;
+    fs::path dataPath(argv[1]);
+    const std::string sceneId(argv[2]);
+    const std::string viewLeftId = padViewId(std::stoi(argv[3]));
+    const std::string viewRightId = padViewId(std::stoi(argv[4]));
+    std::string lightId = "0";
+    for (int i = 5; i < argc; ++i) {
+        std::string a(argv[i]);
+        if (a == "--light" && i+1 < argc) lightId = argv[++i];
     }
 
-    SparseMatchResult r = computeSparseMatches(left, right, calib);
+    DTUDataLoader loader(dataPath.string());
+    CalibData calib = loader.loadCalib(viewLeftId, viewRightId);
+    
+    cv::Mat imgLeft  = loader.loadImage(sceneId, viewLeftId, lightId);
+    cv::Mat imgRight = loader.loadImage(sceneId, viewRightId, lightId);
+    
+    
+    if (imgLeft.empty() || imgRight.empty()) {
+        std::cerr << "Could not load images.\n"; return 1;
+    }
+
+    SparseMatchResult r = computeSparseMatches(imgLeft, imgRight, calib);
 
     if (!r.F.empty()) std::cout << "F =\n" << r.F << "\n";
     if (!r.R.empty()) std::cout << "R =\n" << r.R << "\n";

@@ -59,11 +59,12 @@ include_directories(
 
 # ── Individual executables ────────────────────────────────────────────────
 
-add_executable(sparse_matching src/sparse_matching.cpp src/utils.cpp)
+add_executable(sparse_matching src/sparse_matching.cpp src/utils.cpp src/DataLoader.cpp)
 target_link_libraries(sparse_matching ${OpenCV_LIBS} Eigen3::Eigen)
 
 add_executable(rectification src/rectification.cpp src/sparse_matching.cpp src/utils.cpp)
 target_link_libraries(rectification ${OpenCV_LIBS} Eigen3::Eigen)
+target_compile_definitions(rectification PRIVATE BUILDING_RECTIFICATION)
 
 add_executable(matching src/matching.cpp src/utils.cpp)
 target_link_libraries(matching ${OpenCV_LIBS})
