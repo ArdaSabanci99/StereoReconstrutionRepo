@@ -85,6 +85,7 @@ add_library(stereo_lib OBJECT
     src/matching.cpp
     src/depth.cpp
     src/utils.cpp
+    src/DataLoader.cpp
 )
 target_compile_definitions(stereo_lib PRIVATE PIPELINE_BUILD)
 target_include_directories(stereo_lib PRIVATE include ${OpenCV_INCLUDE_DIRS}
