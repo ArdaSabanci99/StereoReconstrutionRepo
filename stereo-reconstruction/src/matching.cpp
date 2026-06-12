@@ -274,12 +274,14 @@ cv::Mat computeDisparity(const cv::Mat& left_rect, const cv::Mat& right_rect,
 
 #ifndef PIPELINE_BUILD
 int main(int argc, char** argv) {
-    if (argc < 2) {
+    if (argc < 4) {
         std::cerr << "Usage: matching <scene_dir> [sad|ssd|ncc|bm|sgbm]\n";
         return 1;
     }
-    fs::path scene(argv[1]);
-    std::string method_str = (argc >= 3) ? argv[2] : "sgbm";
+    const std::string sceneId(argv[1]);
+    const std::string viewLeftId = padViewId(std::stoi(argv[2]));
+    const std::string viewRightId = padViewId(std::stoi(argv[3]));
+    std::string method_str = (argc >= 5) ? argv[4] : "sgbm";
 
     MatchParams params;
     if      (method_str == "sad")  params.method = MatchMethod::MANUAL_SAD;
@@ -290,12 +292,17 @@ int main(int argc, char** argv) {
     else if (method_str == "bm")   params.method = MatchMethod::OPENCV_BM;
     else                           params.method = MatchMethod::OPENCV_SGBM;
 
-    CalibData calib = loadCalib(scene);
-    params.num_disparities = calib.ndisp;
+    params.window_size = 5;
+    for (int i = 5; i < argc; ++i) {
+        std::string a(argv[i]);
+        if      (a == "--ndisp"  && i+1 < argc) params.num_disparities = std::stoi(argv[++i]);
+        else if (a == "--window" && i+1 < argc) params.window_size     = std::stoi(argv[++i]);
+    }
 
-    cv::Mat left_rect  = cv::imread("results/left_rect.png");
-    cv::Mat right_rect = cv::imread("results/right_rect.png");
-    if (left_rect.empty()) {
+    std::string load_path = "results/scene_" + sceneId + "/rectification";
+    cv::Mat left_rect  = cv::imread(load_path + "/view_" + viewLeftId + ".png");
+    cv::Mat right_rect = cv::imread(load_path + "/view_" + viewRightId + ".png");
+    if (left_rect.empty() || right_rect.empty()) {
         std::cerr << "Run rectification first.\n"; return 1;
     }
 
@@ -304,9 +311,13 @@ int main(int argc, char** argv) {
     cv::Mat disp_vis;
     cv::normalize(disp, disp_vis, 0, 255, cv::NORM_MINMAX, CV_8U);
     cv::applyColorMap(disp_vis, disp_vis, cv::COLORMAP_JET);
-    cv::imwrite("results/disparity.png", disp_vis);
-    saveDisparity(disp, "results/disparity_raw.png");
+    
+    std::string save_path = "results/scene_" + sceneId + "/matching";
+    fs::create_directories(save_path);
+    cv::imwrite(save_path + "/view_" + viewLeftId + "_" + viewRightId + "_disparity.png", disp_vis);
+    saveDisparity(disp, save_path + "/view_" + viewLeftId + "_" + viewRightId + "_disparity_raw.png");
     std::cout << "Saved disparity to results/\n";
+    
     return 0;
 }
 #endif
