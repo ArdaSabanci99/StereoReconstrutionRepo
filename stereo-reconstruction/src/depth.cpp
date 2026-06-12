@@ -1,4 +1,5 @@
 #include "depth.h"
+#include "DataLoader.h"
 #include <fstream>
 #include <iostream>
 
@@ -171,24 +172,34 @@ void savePointCloudOFF(const PointCloud& cloud, const std::string& path) {
     std::cout << "[depth] Saved point cloud to " << path << " (COFF)\n";
 }
 
-#ifndef PIPELINE_BUILD
+#if !defined(PIPELINE_BUILD) && !defined(BUILDING_ICP)
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: depth <scene_dir>\n"; return 1;
+    if (argc < 5) {
+        std::cerr << "Usage: depth <data_path> <scene_id> <left_view_id> <right_view_id>\n";
+        return 1;
     }
-    fs::path scene(argv[1]);
-    CalibData calib = loadCalib(scene);
+    fs::path dataPath(argv[1]);
+    const std::string sceneId(argv[2]);
+    const std::string viewLeftId = padViewId(std::stoi(argv[3]));
+    const std::string viewRightId = padViewId(std::stoi(argv[4]));
 
-    cv::Mat disp = loadDisparity("results/disparity_raw.png");
-    cv::Mat left = cv::imread("results/left_rect.png");
+    DTUDataLoader loader(dataPath.string());
+    CalibData calib = loader.loadCalib(viewLeftId, viewRightId);
+
+    std::string load_path = "results/scene_" + sceneId + "/matching";
+
+    cv::Mat disp = loadDisparity(load_path + "/view_" + viewLeftId + "_" + viewRightId + "_disparity_raw.png");
+    cv::Mat colorImg = cv::imread(load_path + "/view_" + viewLeftId + "_" + viewRightId + "_disparity.png");
 
     auto depth = disparityToDepth(disp, calib);
-    auto cloud = depthToPointCloud(depth, calib, left);
+    auto cloud = depthToPointCloud(depth, calib, colorImg);
     estimateNormals(cloud, depth, calib);
 
-    fs::create_directories("results");
-    savePointCloud   (cloud, "results/pointcloud.ply");
-    savePointCloudOFF(cloud, "results/pointcloud.off");
+    std::string save_path = "results/scene" + sceneId + "/pointcloud";
+    fs::create_directories(save_path);
+    savePointCloud(cloud, save_path + "/views_" + viewLeftId + "_" + viewRightId + ".ply");
+    savePointCloudOFF(cloud, save_path + "/views_" + viewLeftId + "_" + viewRightId + ".off");
+    
     return 0;
 }
 #endif

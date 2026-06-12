@@ -69,7 +69,7 @@ target_compile_definitions(rectification PRIVATE BUILDING_RECTIFICATION)
 add_executable(matching src/matching.cpp src/utils.cpp)
 target_link_libraries(matching ${OpenCV_LIBS})
 
-add_executable(depth src/depth.cpp src/utils.cpp)
+add_executable(depth src/depth.cpp src/utils.cpp src/DataLoader.cpp)
 target_link_libraries(depth ${OpenCV_LIBS} Eigen3::Eigen)
 
 add_executable(evaluation src/evaluation.cpp src/utils.cpp)
