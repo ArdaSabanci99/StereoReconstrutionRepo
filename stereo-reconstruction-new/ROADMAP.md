@@ -13,8 +13,9 @@ only for image I/O and SIFT feature detection. Every geometric algorithm
 our own implementation. This makes it easy to compare each stage against the
 OpenCV baseline and understand where errors come from.
 
-**Dataset:** DTU MVS — unrectified, calibrated, multi-view (49 positions per scene).  
-**Primary dataset for evaluation:** Middlebury 2014 (ground-truth PFM disparity).  
+**Dataset:** DTU MVS SampleSet — undistorted, calibrated, multi-view (49 positions × 2 scenes: scan1, scan6).  
+**Calibration:** Per-view 3×4 projection matrices (`Calibration/cal18/pos_XXX.txt`).  
+**Reference point clouds:** `Points/` (camp, furu, stl, tola methods) for 3D evaluation.  
 **Build:** C++17, CMake, OpenCV ≥ 4.5, Eigen ≥ 3.4, Ceres (for ICP).
 
 ---
@@ -22,7 +23,7 @@ OpenCV baseline and understand where errors come from.
 ## Pipeline
 
 ```
-DTU / Middlebury images + calibration
+DTU SampleSet MVS images + calibration (pos_XXX.txt)
             │
             ▼
 ┌─────────────────────────────────────┐
@@ -52,8 +53,8 @@ DTU / Middlebury images + calibration
                │
             ▼
 ┌─────────────────────────────────────┐
-│  Stage 5 · Evaluation               │  → bad1/bad2/RMSE/coverage
-│  PFM loader · Middlebury metrics    │
+│  Stage 5 · Evaluation               │  → Chamfer / recall vs GT PLY
+│  DTU point cloud evaluation         │
 └──────────────┬──────────────────────┘
                │
        ┌───────┴───────┐
@@ -301,30 +302,44 @@ of the local covariance matrix. Orient normals towards the camera.
 
 ---
 
-## Stage 5 — Evaluation (Middlebury)
+## Stage 5 — Evaluation (DTU SampleSet MVS)
 
-### 5.1 PFM Format
+The DTU dataset provides reference point clouds in `Points/<method>/` (camp,
+furu, stl, tola) as PLY files, one per scene. We evaluate our reconstructed
+`.ply` against the reference using standard MVS metrics.
 
-PFM stores 32-bit float images, bottom-row first, with optional byte-swap.
+### 5.1 Ground-Truth Reference
+
 ```
-header: "Pf\n<width> <height>\n<scale>\n"   (scale < 0 = little-endian)
-data: w * h * 4 bytes, rows from bottom to top
+<data_root>/Points/stl/stlXXX_total.ply   (e.g. stl001_total.ply for scan1)
 ```
 
 ### 5.2 Metrics
 
-Over all pixels where ground-truth disparity is valid (gt > 0):
+**Accuracy** (completeness of our cloud relative to GT):
 ```
-bad1     = % pixels with |est − gt| > 1.0
-bad2     = % pixels with |est − gt| > 2.0
-bad4     = % pixels with |est − gt| > 4.0
-RMSE     = sqrt( Σ (est − gt)² / N_valid )
-avg_err  = Σ |est − gt| / N_valid
-coverage = 100 * N_valid / N_gt   (% of GT pixels with valid estimate)
+For each point p in our cloud:
+  d_acc(p) = min distance to any point in GT cloud
+accuracy = mean(d_acc) over all our points
 ```
 
-Pixels where our estimate is out of range [vmin, vmax] count as invalid (not
-penalised in metrics but reduce coverage).
+**Completeness** (how much of GT we cover):
+```
+For each point q in GT cloud:
+  d_comp(q) = min distance to any point in our cloud
+completeness = mean(d_comp) over all GT points
+```
+
+**Chamfer distance** = (accuracy + completeness) / 2
+
+**Recall @ τ** = % of GT points within distance τ mm of our cloud (τ = 2 mm).
+
+### 5.3 Working Command
+
+```bash
+# scene scan1, views 1 and 2, scale=0.25, ndisp=200
+.\stereo_pipeline.exe <data_root> scan1 1 2 --scale 0.25 --ndisp 200 --method sgm
+```
 
 ---
 
@@ -377,7 +392,7 @@ Alternatively run from command line with the Open3D CLI.
 | # | Deadline | Deliverable |
 |---|----------|-------------|
 | R1 | Jun 15 ✅ | OpenCV end-to-end baseline, first point cloud |
-| R2 | Jun 22 | 8-point + RANSAC, evaluation (PFM + metrics), project setup |
+| R2 | Jun 22 | 8-point + RANSAC, evaluation (DTU point cloud metrics), project setup |
 | R3 | Jun 29 | Loop-Zhang rectification, cost-function study (tables + figures) |
 | R4 | Jul 6  | SGM, ICP fusion, Poisson mesh |
 | R5 | Jul 13 | Matching study complete, failure analysis, stretch goals |
