@@ -5,6 +5,67 @@
 
 ---
 
+## Quick Start — Build & Run
+
+### Prerequisites
+
+- CMake ≥ 3.16
+- C++17 compiler (MSVC 2022/2026, GCC 11+, Clang 14+)
+- OpenCV ≥ 4.5 — recommended: install via vcpkg
+- Eigen3 — recommended: install via vcpkg
+
+#### Windows (vcpkg)
+```bat
+C:\vcpkg\vcpkg.exe install opencv4:x64-windows eigen3:x64-windows
+```
+
+#### Linux / macOS
+```bash
+sudo apt install libopencv-dev libeigen3-dev   # Debian/Ubuntu
+brew install opencv eigen                       # macOS
+```
+
+### Configure & Build
+
+```bash
+# From the stereo-reconstruction-new/ directory
+mkdir build && cd build
+
+# Windows (vcpkg toolchain)
+cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build . --config Release --parallel
+
+# Linux / macOS
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . --parallel
+```
+
+Built executables land in `build/Release/` (Windows) or `build/` (Linux/macOS):
+`sparse_matching`, `rectification`, `matching`, `depth`, `evaluation`, `pipeline`
+
+### Run the Pipeline
+
+```bash
+# Windows
+.\build\Release\pipeline.exe <data_root> scan1 1 2 --scale 0.25 --ndisp 200 --method sgm
+
+# Linux / macOS
+./build/pipeline <data_root> scan1 1 2 --scale 0.25 --ndisp 200 --method sgm
+```
+
+`<data_root>` is the folder containing `Data/`, `Calibration/`, and `Points/`.  
+Results are saved to `results/scenescan1/` (rectified images, disparity, `.ply` point cloud).
+
+**Tested working parameters:**
+| Parameter | Value | Reason |
+|-----------|-------|--------|
+| `--scale` | `0.25` | Brings image to 400×300; expected disparity ~155px fits in ndisp |
+| `--ndisp` | `200` | Covers baseline of ~129mm at scale 0.25 |
+| `--method` | `sgm` | Best quality; also: `sad`, `ssd`, `ncc`, `census`, `bm`, `sgbm` |
+| `--light`  | `0`–`6` | DTU lighting condition (default: 0) |
+
+---
+
 ## Overview
 
 We build the **full classical stereo pipeline from scratch** in C++, using OpenCV
