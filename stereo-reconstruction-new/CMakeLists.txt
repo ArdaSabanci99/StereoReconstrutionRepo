@@ -130,7 +130,9 @@ add_stereo_exe(pipeline
     src/evaluation.cpp
     src/pipeline.cpp
 )
-target_compile_definitions(pipeline PRIVATE PIPELINE_BUILD)
+# PIPELINE_BUILD suppresses matching.cpp's main; SUPPRESS_EVAL_MAIN suppresses
+# evaluation.cpp's main — pipeline.cpp provides the only main for this target.
+target_compile_definitions(pipeline PRIVATE PIPELINE_BUILD SUPPRESS_EVAL_MAIN)
 
 # ── 7. ICP fusion (requires Ceres) ──────────────────────────────────────────
 if(Ceres_FOUND)

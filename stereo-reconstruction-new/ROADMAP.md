@@ -47,14 +47,16 @@ Built executables land in `build/Release/` (Windows) or `build/` (Linux/macOS):
 
 ```bash
 # Windows
-.\build\Release\pipeline.exe <data_root> scan1 1 2 --scale 0.25 --ndisp 200 --method sgm
+.\build\Release\pipeline.exe <data_root> 1 1 2 --scale 0.25 --ndisp 200 --method sgm
 
 # Linux / macOS
-./build/pipeline <data_root> scan1 1 2 --scale 0.25 --ndisp 200 --method sgm
+./build/pipeline <data_root> 1 1 2 --scale 0.25 --ndisp 200 --method sgm
 ```
 
-`<data_root>` is the folder containing `Data/`, `Calibration/`, and `Points/`.  
-Results are saved to `results/scenescan1/` (rectified images, disparity, `.ply` point cloud).
+`<data_root>` is the folder containing `Rectified/`, `Calibration/`, and `Points/`
+(for the DTU SampleSet this is the `MVS Data/` directory). The scene id is the
+**number only** (e.g. `1`), not `scan1` — the loader prepends `scan` internally.  
+Results are saved to `results/scene1/` (rectified images, disparity, `.ply` point cloud).
 
 **Tested working parameters:**
 | Parameter | Value | Reason |
@@ -399,7 +401,7 @@ completeness = mean(d_comp) over all GT points
 
 ```bash
 # scene scan1, views 1 and 2, scale=0.25, ndisp=200
-.\stereo_pipeline.exe <data_root> scan1 1 2 --scale 0.25 --ndisp 200 --method sgm
+.\pipeline.exe <data_root> 1 1 2 --scale 0.25 --ndisp 200 --method sgm
 ```
 
 ---
