@@ -399,10 +399,27 @@ completeness = mean(d_comp) over all GT points
 
 ### 5.3 Working Command
 
+DTU has **no ground-truth disparity map** — only the reference point cloud
+(`Points/stl/stlNNN_total.ply`). Evaluation is therefore done in 3-D, comparing
+our reconstructed cloud against the reference (both already in the DTU world
+frame, so no registration is needed).
+
 ```bash
-# scene scan1, views 1 and 2, scale=0.25, ndisp=200
-.\pipeline.exe <data_root> 1 1 2 --scale 0.25 --ndisp 200 --method sgm
+# Reconstruct + evaluate in one go (OpenCV baseline, SGBM). ndisp must be a
+# multiple of 16 for sgbm/bm; use 208 in place of 200.
+./build/pipeline <data_root> 1 1 2 --scale 0.25 --ndisp 208 --method sgbm \
+    --eval-ply "<data_root>/Points/stl/stl001_total.ply"
+
+# Or evaluate a saved cloud standalone:
+./build/dtu_eval results/scene1/pointcloud/views_001_002.ply \
+    "<data_root>/Points/stl/stl001_total.ply" --tau 2 --maxdist 20
 ```
+
+Reports **accuracy** (ours→GT), **completeness** (GT→ours), **Chamfer**, and
+**precision/recall @ τ**. Means are reported raw, capped at `maxdist`, and as
+medians (the raw accuracy mean is dominated by background outliers; the capped
+mean and median are the meaningful numbers). This is the OpenCV baseline figure
+each custom-implementation swap is measured against.
 
 ---
 

@@ -4,6 +4,7 @@
 #include "matching.h"
 #include "depth.h"
 #include "evaluation.h"
+#include "dtu_eval.h"
 #include <iostream>
 #include <string>
 #include <filesystem>
@@ -20,7 +21,8 @@ static void printUsage(const char* name) {
         << "  --ndisp     <num_disparities>                  (default: 64)\n"
         << "  --light     <light_id>                         (default: 0)\n"
         << "  --scale     <factor>                           (default: 0.5)\n"
-        << "  --gt        <path_to.pfm>                      (evaluate if given)\n"
+        << "  --gt        <path_to.pfm>                      (disparity eval, Middlebury)\n"
+        << "  --eval-ply  <reference.ply>                    (DTU point-cloud eval)\n"
         << "  --no-subpixel\n"
         << "  --no-lr\n"
         << "  --no-median\n";
@@ -40,6 +42,7 @@ int main(int argc, char** argv) {
     double scale = 0.5;
     std::string lightId = "0";
     std::string gt_path;
+    std::string eval_ply_path;
 
     for (int i = 5; i < argc; ++i) {
         std::string a(argv[i]);
@@ -61,7 +64,8 @@ int main(int argc, char** argv) {
         else if (a == "--ndisp"  && i+1 < argc) mp.num_disparities = std::stoi(argv[++i]);
         else if (a == "--scale"  && i+1 < argc) scale              = std::stod(argv[++i]);
         else if (a == "--light"  && i+1 < argc) lightId            = argv[++i];
-        else if (a == "--gt"     && i+1 < argc) gt_path            = argv[++i];
+        else if (a == "--gt"      && i+1 < argc) gt_path            = argv[++i];
+        else if (a == "--eval-ply"&& i+1 < argc) eval_ply_path      = argv[++i];
     }
 
     // ── 1. Load images & calibration ─────────────────────────────────────
@@ -163,6 +167,19 @@ int main(int argc, char** argv) {
     fs::create_directories(cloud_path);
     savePointCloud(cloud, cloud_path + "/views_" + viewL + "_" + viewR + ".ply");
     savePointCloudOFF(cloud, cloud_path + "/views_" + viewL + "_" + viewR + ".off");
+
+    // ── 5b. DTU point-cloud evaluation (optional) ─────────────────────────
+    if (!eval_ply_path.empty()) {
+        std::cout << "\n=== DTU Point-Cloud Evaluation ===\n";
+        std::vector<Eigen::Vector3f> gt = loadPlyXYZ(eval_ply_path);
+        if (gt.empty()) {
+            std::cerr << "[pipeline] Could not load reference cloud: " << eval_ply_path << "\n";
+        } else {
+            DtuEvalResult er = evaluateCloudVsReference(cloud.points, gt);
+            printDtuEval(er, "scene" + sceneId + " views " + viewL + "-" + viewR
+                             + " (" + (manual_rect ? "Loop-Zhang" : "OpenCV") + ")");
+        }
+    }
 
     // ── 6. Evaluation (optional) ──────────────────────────────────────────
     if (!gt_path.empty()) {

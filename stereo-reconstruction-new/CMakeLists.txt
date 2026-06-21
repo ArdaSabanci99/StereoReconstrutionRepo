@@ -120,6 +120,11 @@ add_stereo_exe(evaluation
 # suppress it so evaluation.cpp's main is the only one.
 target_compile_definitions(evaluation PRIVATE PIPELINE_BUILD)
 
+# ── 5b. DTU point-cloud evaluation (standalone) ──────────────────────────────
+add_stereo_exe(dtu_eval
+    src/dtu_eval.cpp
+)
+
 # ── 6. Full pipeline ─────────────────────────────────────────────────────────
 add_stereo_exe(pipeline
     ${COMMON_SRC}
@@ -128,6 +133,7 @@ add_stereo_exe(pipeline
     src/matching.cpp
     src/depth.cpp
     src/evaluation.cpp
+    src/dtu_eval.cpp
     src/pipeline.cpp
 )
 # PIPELINE_BUILD suppresses matching.cpp's main; SUPPRESS_EVAL_MAIN suppresses
