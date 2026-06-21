@@ -22,7 +22,7 @@ ICPResult alignICP(const PointCloud& source, const PointCloud& target,
 #else
     CeresICPOptimizer optimizer;
 #endif
-    optimizer.setMatchingMaxDistance(0.05f);
+    optimizer.setMatchingMaxDistance(100.0f);
     optimizer.usePointToPlaneConstraints(!target.normals.empty());
     optimizer.setNbOfIterations(max_iter);
 
@@ -32,17 +32,19 @@ ICPResult alignICP(const PointCloud& source, const PointCloud& target,
     result.pose       = pose;
     result.iterations = max_iter;
 
-    // Compute final RMS error
-    double sum_sq = 0; int cnt = 0;
-    for (const auto& p : source.points) {
-        Eigen::Vector4f ph(p.x(), p.y(), p.z(), 1.0f);
-        Eigen::Vector3f pt = (pose * ph).head<3>();
-        // Find nearest in target (brute-force, only for diagnostics)
-        float min_d = std::numeric_limits<float>::max();
-        for (const auto& q : target.points) min_d = std::min(min_d, (pt-q).squaredNorm());
-        sum_sq += min_d; ++cnt;
+    // Compute final RMS using FLANN (already indexed above; skip if no iterations ran)
+    result.rms_error = 0.0;
+    if (max_iter > 0 && !target.points.empty()) {
+        double sum_sq = 0; int cnt = 0;
+        for (const auto& p : source.points) {
+            Eigen::Vector4f ph(p.x(), p.y(), p.z(), 1.0f);
+            Eigen::Vector3f pt = (pose * ph).head<3>();
+            float min_d = std::numeric_limits<float>::max();
+            for (const auto& q : target.points) min_d = std::min(min_d, (pt-q).squaredNorm());
+            sum_sq += min_d; ++cnt;
+        }
+        result.rms_error = (cnt > 0) ? std::sqrt(sum_sq / cnt) : 0.0;
     }
-    result.rms_error = (cnt > 0) ? std::sqrt(sum_sq / cnt) : 0.0;
     std::cout << "[ICP] RMS = " << result.rms_error << "\n";
     return result;
 }
@@ -62,7 +64,9 @@ PointCloud voxelDownsample(const PointCloud& cloud, float cell) {
         uint64_t key = ((uint64_t)(ix & 0x1FFFFF))
                      | ((uint64_t)(iy & 0x1FFFFF) << 21)
                      | ((uint64_t)(iz & 0x1FFFFF) << 42);
-        auto& entry = cells[key];
+        // emplace initializes new entries with zero Vector3f (Eigen default-ctor is uninitialized)
+        auto& entry = cells.emplace(key,
+            std::make_pair(Eigen::Vector3f::Zero(), std::vector<Vector4uc>{})).first->second;
         entry.first += p;
         if (has_color && i < cloud.colors.size())
             entry.second.push_back(cloud.colors[i]);
@@ -165,7 +169,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
         clouds.push_back(loadPointCloudPLY(argv[i]));
 
-    PointCloud fused = fusePointClouds(clouds);
+    // DTU clouds are already in calibrated world space; ICP iter=0 just merges+downsamples.
+    PointCloud fused = fusePointClouds(clouds, 0, 5.0f);
 
     std::string save = "results/icp_fused";
     fs::create_directories(save);

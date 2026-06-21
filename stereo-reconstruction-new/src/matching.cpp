@@ -367,7 +367,10 @@ cv::Mat computeDisparity(const cv::Mat& left_rect, const cv::Mat& right_rect,
             auto sgbm = cv::StereoSGBM::create(params.min_disparity, params.num_disparities, params.window_size);
             sgbm->setP1(8  * 3 * params.window_size * params.window_size);
             sgbm->setP2(32 * 3 * params.window_size * params.window_size);
+            if (params.lr_check) sgbm->setDisp12MaxDiff(1);
             cv::Mat d16; sgbm->compute(gL, gR, d16);
+            // Remove small disconnected speckles (streak outliers at depth boundaries)
+            cv::filterSpeckles(d16, -16 * params.num_disparities, 400, params.num_disparities * 16);
             d16.convertTo(disp, CV_32F, 1.0/16.0); break;
         }
         default: throw std::runtime_error("Unknown match method");
