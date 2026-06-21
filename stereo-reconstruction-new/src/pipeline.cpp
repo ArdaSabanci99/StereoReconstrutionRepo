@@ -40,6 +40,7 @@ int main(int argc, char** argv) {
     mp.method = MatchMethod::MANUAL_SGM;
     bool manual_rect = false;
     double scale = 0.5;
+    float max_depth_mm = 2000.0f;
     std::string lightId = "0";
     std::string gt_path;
     std::string eval_ply_path;
@@ -66,6 +67,7 @@ int main(int argc, char** argv) {
         else if (a == "--light"  && i+1 < argc) lightId            = argv[++i];
         else if (a == "--gt"      && i+1 < argc) gt_path            = argv[++i];
         else if (a == "--eval-ply"&& i+1 < argc) eval_ply_path      = argv[++i];
+        else if (a == "--zmax"    && i+1 < argc) max_depth_mm       = std::stof(argv[++i]);
     }
 
     // ── 1. Load images & calibration ─────────────────────────────────────
@@ -143,10 +145,9 @@ int main(int argc, char** argv) {
 
     // ── 5. Depth & point cloud ────────────────────────────────────────────
     std::cout << "\n=== Point Cloud ===\n";
-    // max_depth: 3× the scene depth expected for DTU (~600 mm) gives safe margin.
     PointCloud cloud = disparityToCloud(disp, rect.Q, rect.left_rect,
                                         std::max(1.0f, (float)mp.min_disparity),
-                                        /*max_depth_mm=*/2000.0f);
+                                        max_depth_mm);
 
     // Transform to world space: X_world = R0^T * (R0_rect^T * X_rect - t0)
     {
