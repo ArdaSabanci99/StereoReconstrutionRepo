@@ -70,15 +70,13 @@ public:
 
     template <typename T>
     bool operator()(const T* const pose, T* residuals) const {
-        // TODO: Apply pose to m_src, subtract m_tgt, scale by sqrt(m_weight).
-        // PoseIncrement<T> pi(const_cast<T*>(pose));
-        // T srcT[3] = {T(m_src.x()), T(m_src.y()), T(m_src.z())};
-        // T transformed[3];
-        // pi.apply(srcT, transformed);
-        // residuals[0] = T(sqrt(m_weight)) * (transformed[0] - T(m_tgt.x()));
-        // residuals[1] = T(sqrt(m_weight)) * (transformed[1] - T(m_tgt.y()));
-        // residuals[2] = T(sqrt(m_weight)) * (transformed[2] - T(m_tgt.z()));
-        residuals[0] = T(0); residuals[1] = T(0); residuals[2] = T(0);
+        PoseIncrement<T> pi(const_cast<T*>(pose));
+        T srcT[3] = {T(m_src.x()), T(m_src.y()), T(m_src.z())};
+        T transformed[3];
+        pi.apply(srcT, transformed);
+        residuals[0] = T(sqrt(m_weight)) * (transformed[0] - T(m_tgt.x()));
+        residuals[1] = T(sqrt(m_weight)) * (transformed[1] - T(m_tgt.y()));
+        residuals[2] = T(sqrt(m_weight)) * (transformed[2] - T(m_tgt.z()));
         return true;
     }
 
@@ -101,16 +99,14 @@ public:
 
     template <typename T>
     bool operator()(const T* const pose, T* residuals) const {
-        // TODO: Apply pose to m_src, compute dot product with m_tgtNormal.
-        // PoseIncrement<T> pi(const_cast<T*>(pose));
-        // T srcT[3] = {T(m_src.x()), T(m_src.y()), T(m_src.z())};
-        // T transformed[3];
-        // pi.apply(srcT, transformed);
-        // residuals[0] = T(sqrt(m_weight)) * (
-        //     (transformed[0] - T(m_tgt.x())) * T(m_tgtNormal.x()) +
-        //     (transformed[1] - T(m_tgt.y())) * T(m_tgtNormal.y()) +
-        //     (transformed[2] - T(m_tgt.z())) * T(m_tgtNormal.z()));
-        residuals[0] = T(0);
+        PoseIncrement<T> pi(const_cast<T*>(pose));
+        T srcT[3] = {T(m_src.x()), T(m_src.y()), T(m_src.z())};
+        T transformed[3];
+        pi.apply(srcT, transformed);
+        residuals[0] = T(sqrt(m_weight)) * (
+            (transformed[0] - T(m_tgt.x())) * T(m_tgtNormal.x()) +
+            (transformed[1] - T(m_tgt.y())) * T(m_tgtNormal.y()) +
+            (transformed[2] - T(m_tgt.z())) * T(m_tgtNormal.z()));
         return true;
     }
 
@@ -247,18 +243,17 @@ private:
             if (m.idx < 0) continue;
             if (!srcPts[i].allFinite() || !tgtPts[m.idx].allFinite()) continue;
 
-            // TODO: Add PointToPointConstraint
-            // problem.AddResidualBlock(
-            //     PointToPointConstraint::create(srcPts[i], tgtPts[m.idx], m.weight),
-            //     nullptr, poseIncrement.getData());
-
             if (m_bUsePointToPlane) {
-                if (!tgtNormals[m.idx].allFinite()) continue;
-                // TODO: Add PointToPlaneConstraint
-                // problem.AddResidualBlock(
-                //     PointToPlaneConstraint::create(srcPts[i], tgtPts[m.idx],
-                //                                   tgtNormals[m.idx], m.weight),
-                //     nullptr, poseIncrement.getData());
+                if (!tgtNormals.empty() && (size_t)m.idx < tgtNormals.size() && tgtNormals[m.idx].allFinite()) {
+                    problem.AddResidualBlock(
+                        PointToPlaneConstraint::create(srcPts[i], tgtPts[m.idx],
+                                                      tgtNormals[m.idx], m.weight),
+                        nullptr, poseIncrement.getData());
+                }
+            } else {
+                problem.AddResidualBlock(
+                    PointToPointConstraint::create(srcPts[i], tgtPts[m.idx], m.weight),
+                    nullptr, poseIncrement.getData());
             }
         }
     }

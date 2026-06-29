@@ -3,6 +3,9 @@
 #include "PointCloud.h"
 #include <opencv2/opencv.hpp>
 
+// Convert disparity map to per-pixel depth (Z = f*B/d), invalid pixels → 0.
+cv::Mat disparityToDepth(const cv::Mat& disparity, const CalibData& calib);
+
 // Convert disparity map to coloured point cloud.
 // Uses the Q matrix from rectification and the colour image for RGB.
 PointCloud disparityToCloud(const cv::Mat& disp,

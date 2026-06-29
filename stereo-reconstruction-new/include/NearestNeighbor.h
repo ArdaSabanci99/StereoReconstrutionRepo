@@ -110,8 +110,10 @@ public:
 
         std::vector<Match> matches;
         matches.reserve(transformedPoints.size());
+        // FLANN L2 metric returns squared distances — compare against threshold²
+        float maxDistSq = m_maxDistance * m_maxDistance;
         for (size_t i = 0; i < transformedPoints.size(); ++i) {
-            if (*distances[i] <= m_maxDistance)
+            if (*distances[i] <= maxDistSq)
                 matches.push_back(Match{*indices[i], 1.f});
             else
                 matches.push_back(Match{-1, 0.f});

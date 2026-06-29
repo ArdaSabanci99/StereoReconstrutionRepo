@@ -131,7 +131,10 @@ void printEvalResult(const EvalResult& r, const std::string& label) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Standalone: run all methods on a Middlebury scene and print comparison table
 // ─────────────────────────────────────────────────────────────────────────────
-#ifndef PIPELINE_BUILD
+// Guarded by SUPPRESS_EVAL_MAIN (not PIPELINE_BUILD) so the standalone
+// `evaluation` target — which defines PIPELINE_BUILD to suppress matching.cpp's
+// main — still keeps this main. The `pipeline` target defines both macros.
+#ifndef SUPPRESS_EVAL_MAIN
 int main(int argc, char** argv) {
     if (argc < 4) {
         std::cerr << "Usage: evaluation <left.png> <right.png> <gt.pfm> [vmin vmax]\n";

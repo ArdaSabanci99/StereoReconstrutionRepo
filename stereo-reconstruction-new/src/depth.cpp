@@ -8,6 +8,21 @@
 namespace fs = std::filesystem;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Disparity → depth map  Z = f * B / (d + doffs)
+// ─────────────────────────────────────────────────────────────────────────────
+cv::Mat disparityToDepth(const cv::Mat& disparity, const CalibData& calib) {
+    double f = calib.K0.at<double>(0, 0);
+    cv::Mat depth(disparity.size(), CV_32F, 0.0f);
+    for (int y = 0; y < disparity.rows; ++y)
+        for (int x = 0; x < disparity.cols; ++x) {
+            float d = disparity.at<float>(y, x);
+            if (d <= 0) continue;
+            depth.at<float>(y, x) = (float)(f * calib.baseline / (d + calib.doffs));
+        }
+    return depth;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Disparity → Point Cloud via Q matrix (standard after rectification)
 // Q = [1 0 0 -cx; 0 1 0 -cy; 0 0 0 f; 0 0 -1/Tx 0]
 // ─────────────────────────────────────────────────────────────────────────────
@@ -192,7 +207,7 @@ void savePointCloudOFF(const PointCloud& cloud, const std::string& path) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Standalone
 // ─────────────────────────────────────────────────────────────────────────────
-#if !defined(PIPELINE_BUILD) && !defined(BUILDING_ICP)
+#if !defined(PIPELINE_BUILD) && !defined(BUILDING_ICP) && !defined(BUILDING_MESH)
 int main(int argc, char** argv) {
     if (argc < 5) {
         std::cerr << "Usage: depth <data_path> <scene_id> <left_id> <right_id> [method]\n";

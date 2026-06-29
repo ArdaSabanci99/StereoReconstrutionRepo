@@ -53,9 +53,8 @@ if(NOT Ceres_FOUND)
     message(STATUS "Ceres not found — icp_fuse target will not be built")
 endif()
 
-# ── FLANN (for ICP nearest-neighbour) ───────────────────────────────────────
-set(FLANN_INCLUDE_DIR "${LIBRARY_DIR}/Flann-1.8.4/include" CACHE PATH "")
-set(FLANN_LIBRARY     "${LIBRARY_DIR}/Flann-1.8.4/lib/Release/flann_cpp_s.lib" CACHE FILEPATH "")
+# ── FLANN (header-only, for ICP nearest-neighbour) ──────────────────────────
+set(FLANN_INCLUDE_DIR "${LIBRARY_DIR}/Flann-1.8.4" CACHE PATH "")
 
 # ── Include dirs shared by all targets ──────────────────────────────────────
 include_directories(
@@ -120,6 +119,11 @@ add_stereo_exe(evaluation
 # suppress it so evaluation.cpp's main is the only one.
 target_compile_definitions(evaluation PRIVATE PIPELINE_BUILD)
 
+# ── 5b. DTU point-cloud evaluation (standalone) ──────────────────────────────
+add_stereo_exe(dtu_eval
+    src/dtu_eval.cpp
+)
+
 # ── 6. Full pipeline ─────────────────────────────────────────────────────────
 add_stereo_exe(pipeline
     ${COMMON_SRC}
@@ -128,19 +132,32 @@ add_stereo_exe(pipeline
     src/matching.cpp
     src/depth.cpp
     src/evaluation.cpp
+    src/dtu_eval.cpp
     src/pipeline.cpp
 )
-target_compile_definitions(pipeline PRIVATE PIPELINE_BUILD)
+# PIPELINE_BUILD suppresses matching.cpp's main; SUPPRESS_EVAL_MAIN suppresses
+# evaluation.cpp's main — pipeline.cpp provides the only main for this target.
+target_compile_definitions(pipeline PRIVATE PIPELINE_BUILD SUPPRESS_EVAL_MAIN)
 
-# ── 7. ICP fusion (requires Ceres) ──────────────────────────────────────────
+# ── 7. Mesh reconstruction (triangulation + Laplacian smoothing) ────────────
+add_stereo_exe(mesh
+    ${COMMON_SRC}
+    src/depth.cpp
+    src/mesh.cpp
+)
+target_compile_definitions(mesh PRIVATE BUILDING_MESH)
+
+# ── 8. ICP fusion (requires Ceres) ──────────────────────────────────────────
 if(Ceres_FOUND)
     add_stereo_exe(icp_fuse
         ${COMMON_SRC}
         src/depth.cpp
         src/icp.cpp
     )
-    target_link_libraries(icp_fuse Ceres::ceres ${FLANN_LIBRARY})
+    target_compile_definitions(icp_fuse PRIVATE BUILDING_ICP)
+    target_link_libraries(icp_fuse Ceres::ceres)
     if(WIN32)
-        target_link_libraries(icp_fuse "${LIBRARY_DIR}/glog-lib/lib/Release/glog.lib")
+        target_link_libraries(icp_fuse "${LIBRARY_DIR}/Glog/lib/glog.lib")
     endif()
+    target_include_directories(icp_fuse PRIVATE ${FLANN_INCLUDE_DIR})
 endif()
