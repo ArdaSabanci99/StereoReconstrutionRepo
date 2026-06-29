@@ -32,7 +32,7 @@ ICPResult alignICP(const PointCloud& source, const PointCloud& target,
     result.pose       = pose;
     result.iterations = max_iter;
 
-    // Compute final RMS using FLANN (already indexed above; skip if no iterations ran)
+    // Compute final RMS error (brute-force; diagnostics only; skip if no iterations ran)
     result.rms_error = 0.0;
     if (max_iter > 0 && !target.points.empty()) {
         double sum_sq = 0; int cnt = 0;
