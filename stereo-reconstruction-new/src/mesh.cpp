@@ -241,7 +241,9 @@ int main(int argc, char** argv) {
 
     // Load calibration
     DTUDataLoader loader(dataPath.string());
-    CalibData calib = loader.loadCalib(viewLeftId, viewRightId);
+    std::string calib_path = "results/scene" + sceneId + "/sparse_matching/calib_"
+                         + viewLeftId + "_" + viewRightId + ".yaml";
+    CalibData calib = loadCalibData(calib_path);
 
     // Load pre-computed disparity saved by pipeline/matching stage
     std::string disp_path = "results/scene" + sceneId + "/matching/view_"
