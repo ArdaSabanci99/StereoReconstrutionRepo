@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <sstream>
 #include <iostream>
+#include <stdexcept>
 
 void saveDisparity(const cv::Mat& disp, const std::string& path) {
     // Invalid pixels (negative) are stored as 0; valid disparities scaled ×16.
@@ -28,4 +29,61 @@ std::string padViewId(int id) {
 void printMatInfo(const std::string& name, const cv::Mat& m) {
     std::cout << name << ": " << m.cols << "×" << m.rows
               << " channels=" << m.channels() << "\n";
+}
+
+void saveCalibData(const CalibData& calib, const std::string& path) {
+    cv::FileStorage fs(path, cv::FileStorage::WRITE);
+    if (!fs.isOpened())
+        throw std::runtime_error("[calib] Cannot open for writing: " + path);
+    fs << "baseline" << calib.baseline
+       << "swapped"  << calib.swapped
+       << "K0"       << calib.K0
+       << "K1"       << calib.K1;
+    if (!calib.F.empty())     fs << "F"     << calib.F;
+    if (!calib.R0.empty())    fs << "R0"    << calib.R0;
+    if (!calib.t0.empty())    fs << "t0"    << calib.t0;
+    if (!calib.R_rel.empty()) fs << "R_rel" << calib.R_rel;
+    if (!calib.t_rel.empty()) fs << "t_rel" << calib.t_rel;
+}
+
+CalibData loadCalibData(const std::string& path) {
+    cv::FileStorage fs(path, cv::FileStorage::READ);
+    if (!fs.isOpened())
+        throw std::runtime_error("[calib] Cannot open: " + path);
+    CalibData calib;
+    fs["baseline"] >> calib.baseline;
+    fs["swapped"]  >> calib.swapped;
+    fs["K0"]       >> calib.K0;
+    fs["K1"]       >> calib.K1;
+    fs["F"]        >> calib.F;
+    fs["R0"]       >> calib.R0;
+    fs["t0"]       >> calib.t0;
+    fs["R_rel"]    >> calib.R_rel;
+    fs["t_rel"]    >> calib.t_rel;
+    return calib;
+}
+
+void CalibData::verifyLeftRightCameraOrder() {
+    if (!hasRelativePose()) {
+        throw std::runtime_error("[verify L/R] Cannot verify left/right camera order: missing relative pose (R_rel, t_rel).");
+    }
+    if (t_rel.at<double>(0) < 0) {  // Checking the x-axis translation (if the right camera is geometrically to the left of the left camera)
+        std::cout << "[verify L/R]: Right camera is geometrically to the left of the left camera. Swapping L/R.\n";
+        
+        if (!hasIntrinsics()) {
+            throw std::runtime_error("[verify L/R] Cannot swap left/right cameras: missing intrinsics (K0, K1, baseline).");
+        }
+
+        std::swap(K0, K1);
+        
+        R_rel = R_rel.t();
+        t_rel = -R_rel * t_rel;
+
+        if (!hasFundamentalMatrix()) {
+            throw std::runtime_error("[verify L/R] Cannot swap left/right cameras: missing fundamental matrix F.");
+        }
+        F = F.t();
+    
+        swapped = !swapped;
+    }
 }

@@ -2,6 +2,8 @@
 #include <fstream>
 #include <stdexcept>
 
+constexpr double detTolerance = 1e-6;
+
 DTUDataLoader::DTUDataLoader(const std::string & data_path) 
     : m_data_path(data_path) {}
 
@@ -54,10 +56,14 @@ std::tuple<cv::Mat, cv::Mat, cv::Mat> DTUDataLoader::decomposeProjectionMatrix(c
     
 }
 
-CalibData DTUDataLoader::loadCalib(const std::string & viewLeftId, const std::string & viewRightId) {
+CalibData DTUDataLoader::loadCalibIntrinsics(const std::string & viewLeftId, const std::string & viewRightId) {
     // Recover calibData from projection matrix (intrinsics + baseline)
     auto [K0, R0, t0] = decomposeProjectionMatrix(viewLeftId);
     auto [K1, R1, t1] = decomposeProjectionMatrix(viewRightId);
+
+    // TODO: Fix if the recovered R0, R1 are not proper rotation matrices (det(R) != 1)
+    assert(std::abs(cv::determinant(R0) - 1.0) < detTolerance);
+    assert(std::abs(cv::determinant(R1) - 1.0) < detTolerance);
 
     // intrinsics should be same (same camera), but not same
     printMatInfo("Intrinsics Left", K0);
@@ -67,23 +73,25 @@ CalibData DTUDataLoader::loadCalib(const std::string & viewLeftId, const std::st
 
     CalibData calib;
     calib.K0 = K0; calib.K1 = K1;
-    calib.R0 = R0; calib.t0 = t0;
-    calib.R1 = R1; calib.t1 = t1;
-
-    // Relative pose: X_1 = R_rel * X_0 + T_rel  (in left-cam frame)
-    cv::Mat R_rel = R1 * R0.t();
-    cv::Mat T_rel = t1 - R_rel * t0;
-    calib.R_rel = R_rel;
-    calib.T_rel = T_rel;
 
     // find camera centers in WS
     cv::Mat C0 = -R0.t() * t0;
     cv::Mat C1 = -R1.t() * t1;
-
+    
     // compute baseline
     calib.baseline = cv::norm(C1 - C0);
-
-    std::cout << "Baseline: " << calib.baseline << " (mm)" << std::endl;
+    std::cout << "Horizontal Baseline: " << calib.baseline << " (mm)" << std::endl;
 
     return calib;
+}
+
+void DTUDataLoader::loadLeftExtrinsics(CalibData& calib,
+                                        const std::string& viewLeftId,
+                                        const std::string& viewRightId) {
+    
+                                            // If sparse matching swapped L/R, the effective left camera is the original right.
+    const std::string& effectiveId = calib.swapped ? viewRightId : viewLeftId;
+    auto [K, R, t] = decomposeProjectionMatrix(effectiveId);
+    calib.R0 = R;
+    calib.t0 = t;
 }
