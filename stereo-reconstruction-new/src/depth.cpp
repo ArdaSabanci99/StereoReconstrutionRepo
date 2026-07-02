@@ -17,7 +17,7 @@ cv::Mat disparityToDepth(const cv::Mat& disparity, const CalibData& calib) {
         for (int x = 0; x < disparity.cols; ++x) {
             float d = disparity.at<float>(y, x);
             if (d <= 0) continue;
-            depth.at<float>(y, x) = (float)(f * calib.baseline / (d + calib.doffs));
+            depth.at<float>(y, x) = (float)(f * calib.baseline / d);
         }
     return depth;
 }
