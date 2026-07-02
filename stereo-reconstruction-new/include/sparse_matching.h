@@ -1,7 +1,24 @@
 #pragma once
 #include "utils.h"
+#include "Eigen.h"
 #include <opencv2/opencv.hpp>
 #include <vector>
+
+struct SparseMatchParams {
+    // SIFT detection (OpenCV defaults)
+    int    sift_features        = 0;     // 0 = no limit
+    int    sift_octave_layers   = 3;
+    double sift_contrast_thresh = 0.04;
+    double sift_edge_thresh     = 10.0;
+    double sift_sigma           = 1.6;
+    // Descriptor matching
+    float  ratio_threshold      = 0.75f;  // Lowe ratio test
+    // RANSAC fundamental matrix
+    double ransac_threshold     = 1.0;    // max Sampson distance (px)
+    // recoverPose chirality check
+    double chirality_depth      = 25.0;   // maxDepth passed to cv::recoverPose
+    size_t custom_ransac_iters = 1000; // number of iterations
+};
 
 struct SparseMatchResult {
     std::vector<cv::Point2f> pts_left;
