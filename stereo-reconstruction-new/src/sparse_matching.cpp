@@ -1,14 +1,19 @@
 #include "sparse_matching.h"
 #include "DataLoader.h"
 #include "Eigen.h"
+#include "Ransac.h"
 #include <opencv2/core/eigen.hpp>
 #include <iostream>
+#include <fstream>
+#include <iomanip>
 #include <filesystem>
 #include <random>
 #include <numeric>
 #include <cmath>
 
 namespace fs = std::filesystem;
+constexpr double detTolerance = 1e-6;
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sampson distance (first-order geometric error)
@@ -29,23 +34,131 @@ double sampsonDistance(const cv::Point2f & pt_left, const cv::Point2f & pt_right
     return std::sqrt((num * num) / (den + 1e-10));
 }
 
+std::vector<Eigen::Vector3d> normalizePoints(const std::vector<Eigen::Vector3d>& pts, const Eigen::Matrix3d & K) {
+    Eigen::Matrix3d K_inv = K.inverse();
+    std::vector<Eigen::Vector3d> pts_norm;
+
+    for (const auto & pt : pts) {
+        pts_norm.push_back(K_inv * pt);
     }
 
-
-
-
-
-
+    return pts_norm;
 }
 
+Eigen::Vector3d triangulatePoint(const Eigen::Vector3d & pt_left_norm, const Eigen::Vector3d & pt_right_norm,  const Eigen::Matrix<double, 3, 4> & P_left, const Eigen::Matrix<double, 3, 4> & P_right) {
+    Eigen::Matrix4d A;
 
+    // Constraints from left view
+        // u = p1.X / p3.X -> u . (p3.X) - (p1.X) = 0 -> (u.p3 - p1)X = 0 -> row in linear system AX = 0
+        // v = p2.X / p3.X
+    A.row(0) = pt_left_norm.x() * P_left.row(2) - P_left.row(0);
+    A.row(1) = pt_left_norm.y() * P_left.row(2) - P_left.row(1);
+    
+    // Constraints from right view
+    A.row(2) = pt_right_norm.x() * P_right.row(2) - P_right.row(0);
+    A.row(3) = pt_right_norm.y() * P_right.row(2) - P_right.row(1);
 
+    Eigen::JacobiSVD<Eigen::Matrix4d> svd(A, Eigen::ComputeFullV);
+
+    // smallest singular vector minimizes AX=0
+    Eigen::Vector4d X_hom = svd.matrixV().col(3);
+
+    // normalizing by scale factor
+    return X_hom.head<3>() / X_hom(3);
+}
+
+size_t recoverPose(const std::vector<Eigen::Vector3d>& pts_left_norm, const std::vector<Eigen::Vector3d>& pts_right_norm, 
+                    const Eigen::Matrix3d& E,
+                    Eigen::Matrix3d & R, Eigen::Vector3d & t,
+                    double chirality_depth) {
+    // decompose matrix E via SVD
+    
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(E, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3d U = svd.matrixU();
+    Eigen::Matrix3d V = svd.matrixV();
+
+    if (V.determinant() < 0) {
+        V.col(2) *= -1;  // Ensure a proper rotation matrix
+    }
+
+    if (U.determinant() < 0) {
+        U.col(2) *= -1;  // Ensure a proper rotation matrix
+    }
+
+    // Find physically correct setup
+        // R: both R = U W V^T & U W V^T satisfy the E
+        // t: ambiguity in the direction (t, -t)
+        // -> find combination of (R, t) that corresponds to stereo setup: actual 3D scene points are in front of both cameras (positive depth)
+    
+    Eigen::Matrix3d W;
+    W << 0, -1, 0,
+        1, 0, 0,
+        0, 0, 1;
+
+    Eigen::Matrix3d R1 = U * W * V.transpose();
+    Eigen::Matrix3d R2 = U * W.transpose() * V.transpose();
+
+    if (std::abs(R1.determinant() - 1.0) >= detTolerance) {
+        throw std::runtime_error("R1 is not a proper rotation matrix!");
+    }
+    if (std::abs(R2.determinant() - 1.0) >= detTolerance) {
+        throw std::runtime_error("R2 is not a proper rotation matrix!");
+    }
+
+    Eigen::Vector3d t1 = U.col(2);
+    Eigen::Vector3d t2 = -U.col(2);
+
+    // Chirelity test
+    std::vector<std::pair<Eigen::Matrix3d, Eigen::Vector3d>> candidates = {
+        {R1, t1},
+        {R1, t2},
+        {R2, t1},
+        {R2, t2}
+    };
+    // projection matrix of the left camera
+    Eigen::Matrix<double, 3, 4> P_left = Eigen::Matrix<double, 3, 4>::Zero();
+    P_left.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+    
+    size_t best_inlier_count = 0;
+    size_t best_candidate_idx = 0;
+    for (size_t candidate_idx = 0; candidate_idx < candidates.size(); candidate_idx++) {
+        const auto & [R_candidate, t_candidate] = candidates[candidate_idx];
+        // projection matrix of the right camera in the left camera's coordinate system
+        Eigen::Matrix<double, 3, 4> P_right;
+        P_right.block<3, 3>(0, 0) = R_candidate;  // candidate rotation
+        P_right.col(3) = t_candidate;  // candidate translation
+
+        size_t cur_inlier_count = 0;
+        
+        for (size_t i = 0; i < pts_left_norm.size(); ++i) {
+            Eigen::Vector3d X_left = triangulatePoint(pts_left_norm[i], pts_right_norm[i], P_left, P_right);
+            double Z_left = X_left.z();
+            
+            Eigen::Vector3d X_right = R_candidate * X_left + t_candidate;
+            double Z_right = X_right.z();
+            
+            // Check if both positives
+            // Checking if smaller than chirality depth (if reliable)
+                // For almost parallel rays
+            if (Z_left > 0 && Z_right > 0 && Z_left < chirality_depth && Z_right < chirality_depth) {
+                cur_inlier_count++;
             }
         }
 
+        if (cur_inlier_count > best_inlier_count) {
+            best_inlier_count = cur_inlier_count;
+            best_candidate_idx = candidate_idx;
         }
 
+        std::cout << "[sparse matching - recover pose]: Candidate " << candidate_idx + 1 << " has votes (n_inliers) " << cur_inlier_count << std::endl;
 
+    }
+
+    std::cout << "[sparse matching - recover pose]: Best Candidate " << best_candidate_idx + 1 << std::endl;
+    
+    std::tie(R, t) = candidates[best_candidate_idx];
+    
+    return best_inlier_count;
 
 }
 
@@ -166,33 +279,92 @@ SparseMatchResult computeSparseMatchesOpenCV(const cv::Mat& imgLeft, const cv::M
     return result;
 };
 
-    }
+SparseMatchResult computeSparseMatchesCustom(const cv::Mat & imgLeft, const cv::Mat & imgRight, const CalibData & calib, const SparseMatchParams & params) {
+    SparseMatchResult result;
 
-    // ── 4. Mean epipolar error on inliers ─────────────────────────────────
-    double err_sum = 0; int n = 0;
-    for (int i = 0; i < result.n_matches; ++i) {
-        if (!result.inlier_mask[i]) continue;
-        err_sum += sampsonDistance(result.F, result.pts_left[i], result.pts_right[i]);
-        ++n;
-    }
-    result.mean_epipolar_error = (n > 0) ? err_sum / n : 0.0;
-    std::cout << "[sparse] Mean Sampson error = " << result.mean_epipolar_error << "\n";
+    // Convert to grayscale for SIFT
+    cv::Mat grayL, grayR;
+    cv::cvtColor(imgLeft,  grayL, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(imgRight, grayR, cv::COLOR_BGR2GRAY);
 
-    // ── 5. Essential matrix ────────────────────────────────────────────────
-    result.E = calib.K1.t() * result.F * calib.K0;
+    // 1. Keypoint Detection using SIFT
+        // TODO: implement manual SIFT
+    auto sift = cv::SIFT::create(params.sift_features, params.sift_octave_layers,
+                                  params.sift_contrast_thresh, params.sift_edge_thresh,
+                                  params.sift_sigma);
 
-    // ── 6. Recover R, t (cheirality test) ─────────────────────────────────
-    std::vector<cv::Point2f> in_l, in_r;
-    for (int i = 0; i < result.n_matches; ++i)
-        if (result.inlier_mask[i]) {
-            in_l.push_back(result.pts_left[i]);
-            in_r.push_back(result.pts_right[i]);
+    std::vector<cv::KeyPoint> kpL, kpR;
+    cv::Mat descL, descR;
+    sift->detectAndCompute(grayL, cv::noArray(), kpL, descL);
+    sift->detectAndCompute(grayR, cv::noArray(), kpR, descR);
+
+    // 2. Match descriptors using BFMatches
+    cv::BFMatcher matcher(cv::NORM_L2);
+    std::vector<std::vector<cv::DMatch>> knn;
+    matcher.knnMatch(descL, descR, knn, 2);
+
+    // 3. Find good matches using Lowe's ratio test
+    std::vector<float> matchDist;
+
+    for (auto & m : knn) {
+        if (m.size() >= 2 && m[0].distance < params.ratio_threshold * m[1].distance) {
+            result.pts_left.push_back(kpL[m[0].queryIdx].pt);
+            result.pts_right.push_back(kpR[m[0].trainIdx].pt);
+            matchDist.push_back(m[0].distance);  // For substep
         }
+    }
+    result.n_matches = (int)result.pts_left.size();
 
-    recoverRtFromE(result.E, in_l, in_r, calib.K0, result.R, result.t);
 
-    std::cout << "[sparse] R =\n" << result.R << "\n"
-              << "[sparse] t =  " << result.t.t() << "\n";
+    // 4. Estimate fundamental matrix with RANSAC.
+    Ransac ransac(params.custom_ransac_iters, params.ransac_threshold, 8);
+
+    std::vector<Eigen::Vector3d> eigen_pts_left, eigen_pts_right;
+    for (const auto & pt : result.pts_left) {
+        eigen_pts_left.emplace_back(pt.x, pt.y, 1.0);
+    }
+    for (const auto & pt : result.pts_right) {
+        eigen_pts_right.emplace_back(pt.x, pt.y, 1.0);
+    }
+
+    RansacResult ransac_result = ransac.findFundamentalMatrix(eigen_pts_left, eigen_pts_right);
+    cv::eigen2cv(ransac_result.F, result.F);
+    result.n_inliers = ransac_result.n_inliers;
+    result.inlier_mask = ransac_result.inlier_mask;
+    result.mean_epipolar_error = ransac_result.mean_epipolar_error;
+
+    // Retrieve inliers
+    std::vector<Eigen::Vector3d> inl_left, inl_right;
+    for (size_t i = 0; i < eigen_pts_left.size(); i++) {
+        if (result.inlier_mask[i]) {
+            inl_left.push_back(eigen_pts_left[i]);
+            inl_right.push_back(eigen_pts_right[i]);
+        }
+    }
+
+
+    // 5. Derive essential matrix E from F and intrinsics.
+    // E = K1^T · F · K0  (see derivation: F relates pixel coords, E relates normalised coords)
+    cv::Mat K0 = calib.K0, K1 = calib.K1;
+    Eigen::Matrix3d K0_eigen, K1_eigen;
+    cv::cv2eigen(K0, K0_eigen);
+    cv::cv2eigen(K1, K1_eigen);
+    
+    result.E = K1.t() * result.F * K0;  // is already cv::Mat
+    
+
+
+    // 6. Recover pose
+    std::vector<Eigen::Vector3d> inl_left_norm = normalizePoints(inl_left, K0_eigen);
+    std::vector<Eigen::Vector3d> inl_right_norm = normalizePoints(inl_right, K1_eigen);
+
+    Eigen::Matrix3d E_eigen;
+    cv::cv2eigen(result.E, E_eigen);
+    Eigen::Matrix3d R_eigen;
+    Eigen::Vector3d t_eigen;
+    result.n_pose_inliers = recoverPose(inl_left_norm, inl_right_norm, E_eigen, R_eigen, t_eigen, params.chirality_depth);
+    cv::eigen2cv(R_eigen, result.R);
+    cv::eigen2cv(t_eigen, result.t);
 
     return result;
 };

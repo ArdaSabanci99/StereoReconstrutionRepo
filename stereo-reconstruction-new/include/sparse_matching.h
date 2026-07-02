@@ -79,3 +79,12 @@ void saveMatchVisualization(const cv::Mat& imgLeft, const cv::Mat& imgRight,
 
 
 
+std::vector<Eigen::Vector3d> normalizePoints(const std::vector<Eigen::Vector3d>& pts, const Eigen::Matrix3d & K);
+
+// pts are already normalized
+size_t recoverPose (const std::vector<Eigen::Vector3d>& pts_left, const std::vector<Eigen::Vector3d>& pts_right, 
+                                                            const Eigen::Matrix3d& E,
+                                                            Eigen::Matrix3d & R, Eigen::Vector3d & t,
+                                                            double chirality_depth);
+Eigen::Vector3d triangulatePoint(const Eigen::Vector3d & pt_left_norm, const Eigen::Vector3d & pt_right_norm, const Eigen::Matrix<double, 3, 4> & P_left, const Eigen::Matrix<double, 3, 4> & P_right);
+
