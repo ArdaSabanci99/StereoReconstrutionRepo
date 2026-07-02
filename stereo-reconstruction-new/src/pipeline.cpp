@@ -4,6 +4,7 @@
 #include "matching.h"
 #include "depth.h"
 #include "evaluation.h"
+#include "dtu_eval.h"
 #include <iostream>
 #include <string>
 #include <filesystem>
@@ -34,7 +35,10 @@ static void printUsage(const char* name) {
         << "  --sm-sigma     <F>   SIFT Gaussian sigma (default: 1.6)\n"
         << "  --sm-ratio     <F>   Lowe ratio test threshold (default: 0.75)\n"
         << "  --sm-ransac    <F>   RANSAC Sampson distance threshold px (default: 1.0)\n"
-        << "  --sm-chirality <F>   recoverPose max depth (default: 25.0)\n";
+        << "  --sm-chirality <F>   recoverPose max depth (default: 25.0)\n"
+        << "Evaluation:\n"
+        << "  --gt        <path_to.pfm>                      (disparity eval, Middlebury)\n"  //TODO: Check whether it is being used in current setup 
+        << "  --eval-ply  <reference.ply>                    (DTU point-cloud eval)\n" 
 }
 
 int main(int argc, char** argv) {
@@ -49,9 +53,14 @@ int main(int argc, char** argv) {
     mp.method = MatchMethod::MANUAL_SGM;
     bool manual_rect = false;
     double scale = 0.5;
+
     std::string gt_path;
     bool opencv_sm = false;
     SparseMatchParams smParams;
+
+    float max_depth_mm = 2000.0f;
+    std::string gt_path;
+    std::string eval_ply_path;
 
     for (int i = 5; i < argc; ++i) {
         std::string a(argv[i]);
@@ -69,6 +78,7 @@ int main(int argc, char** argv) {
             else if (m == "bm")    mp.method = MatchMethod::OPENCV_BM;
             else if (m == "sgbm")  mp.method = MatchMethod::OPENCV_SGBM;
         }
+
         else if (a == "--window"       && i+1 < argc) mp.window_size               = std::stoi(argv[++i]);
         else if (a == "--ndisp"        && i+1 < argc) mp.num_disparities           = std::stoi(argv[++i]);
         else if (a == "--scale"        && i+1 < argc) scale                        = std::stod(argv[++i]);
@@ -82,6 +92,10 @@ int main(int argc, char** argv) {
         else if (a == "--sm-ratio"     && i+1 < argc) smParams.ratio_threshold      = std::stof(argv[++i]);
         else if (a == "--sm-ransac"    && i+1 < argc) smParams.ransac_threshold     = std::stod(argv[++i]);
         else if (a == "--sm-chirality" && i+1 < argc) smParams.chirality_depth      = std::stod(argv[++i]);
+
+        else if (a == "--gt"      && i+1 < argc) gt_path            = argv[++i];
+        else if (a == "--eval-ply"&& i+1 < argc) eval_ply_path      = argv[++i];
+        else if (a == "--zmax"    && i+1 < argc) max_depth_mm       = std::stof(argv[++i]);
     }
 
     // ── 1. Load images & calibration ─────────────────────────────────────
@@ -152,10 +166,9 @@ int main(int argc, char** argv) {
 
     // ── 5. Depth & point cloud ────────────────────────────────────────────
     std::cout << "\n=== Point Cloud ===\n";
-    // max_depth: 3× the scene depth expected for DTU (~600 mm) gives safe margin.
     PointCloud cloud = disparityToCloud(disp, rect.Q, rect.left_rect,
                                         std::max(1.0f, (float)mp.min_disparity),
-                                        /*max_depth_mm=*/2000.0f);
+                                        max_depth_mm);
 
     // Load left camera world pose now that swapped flag is settled after sparse matching.
     loader.loadLeftExtrinsics(calib, viewL, viewR);
@@ -179,6 +192,19 @@ int main(int argc, char** argv) {
     fs::create_directories(cloud_path);
     savePointCloud(cloud, cloud_path + "/views_" + viewL + "_" + viewR + ".ply");
     savePointCloudOFF(cloud, cloud_path + "/views_" + viewL + "_" + viewR + ".off");
+
+    // ── 5b. DTU point-cloud evaluation (optional) ─────────────────────────
+    if (!eval_ply_path.empty()) {
+        std::cout << "\n=== DTU Point-Cloud Evaluation ===\n";
+        std::vector<Eigen::Vector3f> gt = loadPlyXYZ(eval_ply_path);
+        if (gt.empty()) {
+            std::cerr << "[pipeline] Could not load reference cloud: " << eval_ply_path << "\n";
+        } else {
+            DtuEvalResult er = evaluateCloudVsReference(cloud.points, gt);
+            printDtuEval(er, "scene" + sceneId + " views " + viewL + "-" + viewR
+                             + " (" + (manual_rect ? "Loop-Zhang" : "OpenCV") + ")");
+        }
+    }
 
     // ── 6. Evaluation (optional) ──────────────────────────────────────────
     if (!gt_path.empty()) {

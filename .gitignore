@@ -1,0 +1,12 @@
+# Large datasets — never commit (SampleSet.zip is ~6.9 GB)
+data/
+
+# Editor / IDE
+.vscode/
+.vs/
+*.user
+*.suo
+
+# Build & results (also ignored per-project)
+build/
+results/
