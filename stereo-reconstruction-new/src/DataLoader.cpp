@@ -7,11 +7,14 @@ constexpr double detTolerance = 1e-6;
 DTUDataLoader::DTUDataLoader(const std::string & data_path) 
     : m_data_path(data_path) {}
 
-cv::Mat DTUDataLoader::loadImage(const std::string & sceneId, const std::string & viewId, const std::string & lightId) {
+cv::Mat DTUDataLoader::loadImage(const std::string & sceneId, const std::string & viewId) {
     std::string img_path = m_data_path + "/Rectified/scan" + sceneId 
-    + "/rect_" + viewId + "_" + lightId + "_r5000.png";
+    + "/rect_" + viewId + "_max.png";
 
     cv::Mat img = cv::imread(img_path);
+
+    if (img.empty())
+        throw std::runtime_error("Cannot open: " + img_path);
 
     return img;
 }

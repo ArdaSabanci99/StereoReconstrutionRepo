@@ -14,16 +14,27 @@ static void printUsage(const char* name) {
     std::cerr
         << "Usage: " << name
         << " <data_path> <scene_id> <left_id> <right_id> [options]\n"
+        << "Dense matching:\n"
         << "  --method    sad|ssd|ncc|census|sgm|bm|sgbm   (default: sgm)\n"
-        << "  --manual-rect                                  (Loop-Zhang rectification)\n"
         << "  --window    <size>                             (default: 5)\n"
         << "  --ndisp     <num_disparities>                  (default: 64)\n"
-        << "  --light     <light_id>                         (default: 0)\n"
-        << "  --scale     <factor>                           (default: 0.5)\n"
-        << "  --gt        <path_to.pfm>                      (evaluate if given)\n"
         << "  --no-subpixel\n"
         << "  --no-lr\n"
-        << "  --no-median\n";
+        << "  --no-median\n"
+        << "Pipeline:\n"
+        << "  --manual-rect                                  (Loop-Zhang rectification)\n"
+        << "  --scale     <factor>                           (default: 0.5)\n"
+        << "  --gt        <path_to.pfm>                      (evaluate if given)\n"
+        << "Sparse matching:\n"
+        << "  --opencv_sm                                    (use OpenCV sparse matching; default: manual)\n"
+        << "  --sm-features  <N>   SIFT max keypoints, 0=unlimited (default: 0)\n"
+        << "  --sm-octaves   <N>   SIFT octave layers (default: 3)\n"
+        << "  --sm-contrast  <F>   SIFT contrast threshold (default: 0.04)\n"
+        << "  --sm-edge      <F>   SIFT edge threshold (default: 10.0)\n"
+        << "  --sm-sigma     <F>   SIFT Gaussian sigma (default: 1.6)\n"
+        << "  --sm-ratio     <F>   Lowe ratio test threshold (default: 0.75)\n"
+        << "  --sm-ransac    <F>   RANSAC Sampson distance threshold px (default: 1.0)\n"
+        << "  --sm-chirality <F>   recoverPose max depth (default: 25.0)\n";
 }
 
 int main(int argc, char** argv) {
@@ -38,8 +49,9 @@ int main(int argc, char** argv) {
     mp.method = MatchMethod::MANUAL_SGM;
     bool manual_rect = false;
     double scale = 0.5;
-    std::string lightId = "0";
     std::string gt_path;
+    bool opencv_sm = false;
+    SparseMatchParams smParams;
 
     for (int i = 5; i < argc; ++i) {
         std::string a(argv[i]);
@@ -57,36 +69,33 @@ int main(int argc, char** argv) {
             else if (m == "bm")    mp.method = MatchMethod::OPENCV_BM;
             else if (m == "sgbm")  mp.method = MatchMethod::OPENCV_SGBM;
         }
-        else if (a == "--window" && i+1 < argc) mp.window_size     = std::stoi(argv[++i]);
-        else if (a == "--ndisp"  && i+1 < argc) mp.num_disparities = std::stoi(argv[++i]);
-        else if (a == "--scale"  && i+1 < argc) scale              = std::stod(argv[++i]);
-        else if (a == "--light"  && i+1 < argc) lightId            = argv[++i];
-        else if (a == "--gt"     && i+1 < argc) gt_path            = argv[++i];
+        else if (a == "--window"       && i+1 < argc) mp.window_size               = std::stoi(argv[++i]);
+        else if (a == "--ndisp"        && i+1 < argc) mp.num_disparities           = std::stoi(argv[++i]);
+        else if (a == "--scale"        && i+1 < argc) scale                        = std::stod(argv[++i]);
+        else if (a == "--gt"           && i+1 < argc) gt_path                      = argv[++i];
+        else if (a == "--opencv_sm")                   opencv_sm                   = true;
+        else if (a == "--sm-features"  && i+1 < argc) smParams.sift_features        = std::stoi(argv[++i]);
+        else if (a == "--sm-octaves"   && i+1 < argc) smParams.sift_octave_layers   = std::stoi(argv[++i]);
+        else if (a == "--sm-contrast"  && i+1 < argc) smParams.sift_contrast_thresh = std::stod(argv[++i]);
+        else if (a == "--sm-edge"      && i+1 < argc) smParams.sift_edge_thresh     = std::stod(argv[++i]);
+        else if (a == "--sm-sigma"     && i+1 < argc) smParams.sift_sigma           = std::stod(argv[++i]);
+        else if (a == "--sm-ratio"     && i+1 < argc) smParams.ratio_threshold      = std::stof(argv[++i]);
+        else if (a == "--sm-ransac"    && i+1 < argc) smParams.ransac_threshold     = std::stod(argv[++i]);
+        else if (a == "--sm-chirality" && i+1 < argc) smParams.chirality_depth      = std::stod(argv[++i]);
     }
 
     // ── 1. Load images & calibration ─────────────────────────────────────
     std::cout << "\n=== Loading scene " << sceneId << " views "
               << viewL << "–" << viewR << " ===\n";
     DTUDataLoader loader(dataPath.string());
-    CalibData calib = loader.loadCalib(viewL, viewR);
-    cv::Mat imgL = loader.loadImage(sceneId, viewL, lightId);
-    cv::Mat imgR = loader.loadImage(sceneId, viewR, lightId);
+    CalibData calib = loader.loadCalibIntrinsics(viewL, viewR);
+    cv::Mat imgL = loader.loadImage(sceneId, viewL);
+    cv::Mat imgR = loader.loadImage(sceneId, viewR);
     if (imgL.empty() || imgR.empty()) {
         std::cerr << "Could not load images.\n"; return 1;
     }
-    printMatInfo("Left",  imgL);
-    printMatInfo("Right", imgR);
-
-    // Swap if needed (left must be geometrically to the left)
-    if (calib.T_rel.at<double>(0) > 0) {
-        std::cout << "[pipeline] Swapping L/R (T_rel[0] > 0)\n";
-        std::swap(imgL, imgR);
-        std::swap(calib.K0, calib.K1);
-        std::swap(calib.R0, calib.R1);
-        std::swap(calib.t0, calib.t1);
-        calib.R_rel = calib.R1 * calib.R0.t();
-        calib.T_rel = calib.t1 - calib.R_rel * calib.t0;
-    }
+    printMatInfo("Left Image",  imgL);
+    printMatInfo("Right Image", imgR);
 
     // Downscale
     if (scale != 1.0) {
@@ -97,20 +106,24 @@ int main(int argc, char** argv) {
             K->at<double>(0,2) = (K->at<double>(0,2)+0.5)*scale - 0.5;
             K->at<double>(1,2) = (K->at<double>(1,2)+0.5)*scale - 0.5;
         }
-        std::cout << "[pipeline] Downscaled to " << imgL.cols << "×" << imgL.rows << "\n";
+        std::cout << "Images downscaled to " << imgL.cols << "×" << imgL.rows << "\n";
     }
 
     // ── 2. Sparse matching ────────────────────────────────────────────────
     std::cout << "\n=== Sparse Matching ===\n";
-    SparseMatchResult sparse = computeSparseMatches(imgL, imgR, calib);
+    SparseMatchResult sparse = computeSparseMatches(imgL, imgR, calib, opencv_sm, smParams);
+
+    if (calib.swapped) {
+        std::swap(imgL, imgR);
+    }
+    std::string sparse_path = "results/scene" + sceneId + "/sparse_matching";
+    fs::create_directories(sparse_path);
+    saveCalibData(calib, sparse_path + "/calib_" + viewL + "_" + viewR + ".yaml");
 
     // ── 3. Rectification ─────────────────────────────────────────────────
     std::cout << "\n=== Rectification (" << (manual_rect ? "Loop-Zhang" : "OpenCV") << ") ===\n";
     RectifyResult rect;
-    if (manual_rect && !sparse.F.empty())
-        rect = rectifyManual(imgL, imgR, sparse.F, calib);
-    else
-        rect = rectifyOpenCV(imgL, imgR, calib);
+    rect = manual_rect ? rectifyManual(imgL, imgR, calib) : rectifyOpenCV(imgL, imgR, calib);
 
     std::string rect_path = "results/scene" + sceneId + "/rectification";
     fs::create_directories(rect_path);
@@ -143,6 +156,9 @@ int main(int argc, char** argv) {
     PointCloud cloud = disparityToCloud(disp, rect.Q, rect.left_rect,
                                         std::max(1.0f, (float)mp.min_disparity),
                                         /*max_depth_mm=*/2000.0f);
+
+    // Load left camera world pose now that swapped flag is settled after sparse matching.
+    loader.loadLeftExtrinsics(calib, viewL, viewR);
 
     // Transform to world space: X_world = R0^T * (R0_rect^T * X_rect - t0)
     {

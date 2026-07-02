@@ -247,7 +247,7 @@ RectifyResult rectifyManual(const cv::Mat& left, const cv::Mat& right,
 #ifndef PIPELINE_BUILD
 int main(int argc, char** argv) {
     if (argc < 5) {
-        std::cerr << "Usage: rectification <data_path> <scene_id> <left_id> <right_id> [--manual] [--light N]\n";
+        std::cerr << "Usage: rectification <data_path> <scene_id> <left_id> <right_id> [--manual]\n";
         return 1;
     }
     fs::path dataPath(argv[1]);
@@ -255,27 +255,28 @@ int main(int argc, char** argv) {
     const std::string viewL = padViewId(std::stoi(argv[3]));
     const std::string viewR = padViewId(std::stoi(argv[4]));
     bool manual = false;
-    std::string lightId = "0";
     for (int i = 5; i < argc; ++i) {
         std::string a(argv[i]);
         if (a == "--manual") manual = true;
-        else if (a == "--light" && i+1 < argc) lightId = argv[++i];
     }
 
     DTUDataLoader loader(dataPath.string());
-    CalibData calib = loader.loadCalib(viewL, viewR);
-    cv::Mat imgL = loader.loadImage(sceneId, viewL, lightId);
-    cv::Mat imgR = loader.loadImage(sceneId, viewR, lightId);
-    if (imgL.empty() || imgR.empty()) { std::cerr << "Could not load images.\n"; return 1; }
-
-    RectifyResult res;
-    if (manual) {
-        SparseMatchResult sp = computeSparseMatches(imgL, imgR, calib);
-        if (sp.F.empty()) { std::cerr << "Sparse failed.\n"; return 1; }
-        res = rectifyManual(imgL, imgR, sp.F, calib);
-    } else {
-        res = rectifyOpenCV(imgL, imgR, calib);
+    std::string calib_path = "results/scene" + sceneId + "/sparse_matching/calib_" + viewL + "_" + viewR + ".yaml";
+    CalibData calib = loadCalibData(calib_path);
+    if (!calib.hasIntrinsics() || !calib.hasRelativePose()) {
+        std::cout << "[rectification]: Missing intrinsics or relative pose — run sparse_matching first.\n";
+        throw std::runtime_error("Incomplete calibration: " + calib_path);
     }
+
+    std::string effLeftId = calib.swapped ? viewR : viewL;
+    std::string effRightId = calib.swapped ? viewL : viewR;
+
+    cv::Mat imgL = loader.loadImage(sceneId, effLeftId);
+    cv::Mat imgR = loader.loadImage(sceneId, effRightId);
+    if (imgL.empty() || imgR.empty()) { std::cerr << "Could not load images.\n"; return 1; }
+    
+
+    RectifyResult res = manual ? rectifyManual(imgL, imgR, calib) : rectifyOpenCV(imgL, imgR, calib);
 
     std::string savePath = "results/scene" + sceneId + "/rectification";
     fs::create_directories(savePath);

@@ -13,7 +13,7 @@ class DTUDataLoader {
 public:
     DTUDataLoader(const std::string & data_path);
 
-    cv::Mat loadImage(const std::string & sceneId, const std::string & viewId, const std::string & lightId);
+    cv::Mat loadImage(const std::string & sceneId, const std::string & viewId);
     cv::Mat loadCameraProjection(const std::string & viewId);
     std::tuple<cv::Mat, cv::Mat, cv::Mat> decomposeProjectionMatrix(const std::string & viewId);
     // Loads only K0, K1, baseline from DTU projection matrices.

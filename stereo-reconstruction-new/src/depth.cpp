@@ -198,6 +198,7 @@ int main(int argc, char** argv) {
         std::cerr << "Usage: depth <data_path> <scene_id> <left_id> <right_id> [method]\n";
         return 1;
     }
+    fs::path dataPath(argv[1]);
     const std::string sceneId(argv[2]);
     const std::string viewL = padViewId(std::stoi(argv[3]));
     const std::string viewR = padViewId(std::stoi(argv[4]));
@@ -207,9 +208,24 @@ int main(int argc, char** argv) {
     cv::Mat disp = loadDisparity(match_path + "/view_" + viewL + "_" + viewR + "_" + method + "_raw.png");
     cv::Mat color = cv::imread(match_path + "/view_" + viewL + "_" + viewR + "_" + method + ".png");
 
-    // Load Q from saved rectification (simplified: try to get from calibration)
-    DTUDataLoader loader(argv[1]);
-    CalibData calib = loader.loadCalib(viewL, viewR);
+   
+    std::string calib_path = "results/scene" + sceneId + "/sparse_matching/calib_" + viewL + "_" + viewR + ".yaml";
+    CalibData calib = loadCalibData(calib_path);
+    if (!calib.hasIntrinsics())
+        throw std::runtime_error("[depth] Calib incomplete — run sparse_matching first: " + calib_path);
+
+    // Load left correct extrinsics
+    std::string effLeftId = calib.swapped ? viewR : viewL;
+    std::string effRightId = calib.swapped ? viewL : viewR;
+
+    DTUDataLoader loader(dataPath.string());
+    CalibData orig_calib;
+    loader.loadLeftExtrinsics(orig_calib, effLeftId, effRightId);
+    calib.R0 = orig_calib.R0;
+    calib.t0 = orig_calib.t0;
+
+     // Load Q from saved rectification (simplified: try to get from calibration)
+    
     double f  = calib.K0.at<double>(0,0);
     double cx = calib.K0.at<double>(0,2), cy = calib.K0.at<double>(1,2);
     double B  = cv::norm(calib.T_rel);

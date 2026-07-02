@@ -428,6 +428,13 @@ int main(int argc, char** argv) {
     cv::Mat rRect = cv::imread(load_path + "/view_" + viewR + ".png");
     if (lRect.empty() || rRect.empty()) { std::cerr << "Run rectification first.\n"; return 1; }
 
+    std::string calib_path = "results/scene" + sceneId + "/sparse_matching/calib_" + viewL + "_" + viewR + ".yaml";
+    CalibData calib = loadCalibData(calib_path);
+    if (calib.swapped) {
+        std::cout << "[matching] L/R swapped during sparse matching — swapping rectified images.\n";
+        std::swap(lRect, rRect);
+    }
+
     cv::Mat disp = computeDisparity(lRect, rRect, params);
 
     cv::Mat vis; cv::normalize(disp, vis, 0, 255, cv::NORM_MINMAX, CV_8U);

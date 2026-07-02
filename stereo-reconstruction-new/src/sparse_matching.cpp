@@ -449,56 +449,75 @@ void saveMatchVisualization(const cv::Mat& imgLeft, const cv::Mat& imgRight,
     std::cout << "[sparse_matching] Results logged to " << logPath << "\n";
 }
 
+
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Standalone executable
 // ─────────────────────────────────────────────────────────────────────────────
 #if !defined(PIPELINE_BUILD) && !defined(BUILDING_RECTIFICATION)
 int main(int argc, char** argv) {
     if (argc < 5) {
-        std::cerr << "Usage: sparse_matching <data_path> <scene_id> <left_id> <right_id> [--light N]\n";
+        std::cerr
+            << "Usage: sparse_matching <data_path> <scene_id> <left_id> <right_id> [options]\n"
+            << "  --opencv               (use OpenCV sparse matching; default: manual)\n"
+            << "  --features  <N>        SIFT max keypoints, 0=unlimited (default: 0)\n"
+            << "  --octaves   <N>        SIFT octave layers (default: 3)\n"
+            << "  --contrast  <F>        SIFT contrast threshold (default: 0.04)\n"
+            << "  --edge      <F>        SIFT edge threshold (default: 10.0)\n"
+            << "  --sigma     <F>        SIFT Gaussian sigma (default: 1.6)\n"
+            << "  --ratio     <F>        Lowe ratio test threshold (default: 0.75)\n"
+            << "  --ransac    <F>        RANSAC Sampson distance threshold px (default: 1.0)\n"
+            << "  --chirality <F>        recoverPose max depth (default: 25.0)\n";
         return 1;
     }
+
     fs::path dataPath(argv[1]);
     const std::string sceneId(argv[2]);
     const std::string viewL = padViewId(std::stoi(argv[3]));
     const std::string viewR = padViewId(std::stoi(argv[4]));
-    std::string lightId = "0";
-    for (int i = 5; i < argc; ++i)
-        if (std::string(argv[i]) == "--light" && i+1 < argc) lightId = argv[++i];
+    bool run_opencv = false;
+    SparseMatchParams smParams;
 
-    DTUDataLoader loader(dataPath.string());
-    CalibData calib = loader.loadCalib(viewL, viewR);
-    cv::Mat imgL = loader.loadImage(sceneId, viewL, lightId);
-    cv::Mat imgR = loader.loadImage(sceneId, viewR, lightId);
-    if (imgL.empty() || imgR.empty()) { std::cerr << "Could not load images.\n"; return 1; }
-
-    SparseMatchResult r = computeSparseMatches(imgL, imgR, calib);
-
-    // Save match visualisation
-    std::vector<cv::KeyPoint> kpL, kpR;
-    std::vector<cv::DMatch>   good;
-    // Re-detect for visualisation
-    auto sift = cv::SIFT::create(3000);
-    cv::Mat dL, dR;
-    sift->detectAndCompute(imgL, cv::noArray(), kpL, dL);
-    sift->detectAndCompute(imgR, cv::noArray(), kpR, dR);
-    // Draw first 50 inlier matches approximately
-    cv::Mat vis;
-    if (!kpL.empty() && !kpR.empty()) {
-        std::vector<cv::DMatch> dm;
-        cv::BFMatcher bfm(cv::NORM_L2);
-        std::vector<std::vector<cv::DMatch>> knn;
-        bfm.knnMatch(dL, dR, knn, 2);
-        for (auto& m : knn)
-            if (m.size() >= 2 && m[0].distance < 0.75f * m[1].distance)
-                dm.push_back(m[0]);
-        std::vector<cv::DMatch> subset(dm.begin(), dm.begin() + std::min((int)dm.size(), 50));
-        cv::drawMatches(imgL, kpL, imgR, kpR, subset, vis);
-        std::string savePath = "results/scene" + sceneId + "/sparse";
-        fs::create_directories(savePath);
-        cv::imwrite(savePath + "/matches_" + viewL + "_" + viewR + ".png", vis);
-        std::cout << "Match visualisation saved.\n";
+    for (int i = 5; i < argc; ++i) {
+        std::string a(argv[i]);
+        if (a == "--opencv")                   run_opencv                 = true;
+        else if (a == "--features"  && i+1 < argc) smParams.sift_features     = std::stoi(argv[++i]);
+        else if (a == "--octaves"   && i+1 < argc) smParams.sift_octave_layers= std::stoi(argv[++i]);
+        else if (a == "--contrast"  && i+1 < argc) smParams.sift_contrast_thresh = std::stod(argv[++i]);
+        else if (a == "--edge"      && i+1 < argc) smParams.sift_edge_thresh  = std::stod(argv[++i]);
+        else if (a == "--sigma"     && i+1 < argc) smParams.sift_sigma        = std::stod(argv[++i]);
+        else if (a == "--ratio"     && i+1 < argc) smParams.ratio_threshold   = std::stof(argv[++i]);
+        else if (a == "--ransac"    && i+1 < argc) smParams.ransac_threshold  = std::stod(argv[++i]);
+        else if (a == "--chirality" && i+1 < argc) smParams.chirality_depth   = std::stod(argv[++i]);
     }
+
+    // Load calibration and images for the requested view pair.
+    DTUDataLoader loader(dataPath.string());
+    CalibData calib = loader.loadCalibIntrinsics(viewL, viewR);
+    cv::Mat imgL = loader.loadImage(sceneId, viewL);
+    cv::Mat imgR = loader.loadImage(sceneId, viewR);
+
+    if (imgL.empty() || imgR.empty()) {
+        std::cerr << "Could not load images.\n";
+        return 1;
+    }
+
+    SparseMatchResult result = computeSparseMatches(imgL, imgR, calib, run_opencv, smParams);
+
+    std::string savePath = "results/scene" + sceneId + "/sparse_matching";
+    fs::create_directories(savePath);
+
+    saveCalibData(calib, savePath + "/calib_" + viewL + "_" + viewR + ".yaml");
+    std::cout << "[sparse_matching] Calib saved to " << savePath << "\n";
+
+    saveMatchVisualization(imgL, imgR, result, savePath, "baseline", viewL, viewR);
+
+    std::cout << "[sparse_matching] Matches after ratio test: " << result.n_matches << "\n";
+    std::cout << "[sparse_matching] RANSAC inliers: " << result.n_inliers << "/" << result.n_matches << "\n";
+    std::cout << "[sparse_matching] Mean Sampson error (inliers): " << result.mean_epipolar_error << " px\n";
+    std::cout << "[sparse_matching] Pose cheirality inliers: " << result.n_pose_inliers
+              << " / RANSAC inliers: " << result.n_inliers << "\n";
+
     return 0;
 }
 #endif
