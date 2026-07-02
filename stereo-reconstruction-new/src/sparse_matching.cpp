@@ -11,302 +11,161 @@
 namespace fs = std::filesystem;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper: build normalisation transform T so that:
-//   - centroid of pts → origin
-//   - mean distance from origin → sqrt(2)
-// Returns T (3×3, double) and writes normalised points to pts_n.
+// Sampson distance (first-order geometric error)
+//   d = sqrt( (x2^T F x1)^2 / ( (Fx1)[0]^2 + (Fx1)[1]^2 + (F^T x2)[0]^2 + (F^T x2)[1]^2 ) )
+//   sqrt is applied so the result is in pixels (same units as the RANSAC threshold)
 // ─────────────────────────────────────────────────────────────────────────────
-static cv::Mat normalisePoints(const std::vector<cv::Point2f>& pts,
-                                std::vector<cv::Point2f>& pts_n) {
-    // Centroid
-    double cx = 0, cy = 0;
-    for (const auto& p : pts) { cx += p.x; cy += p.y; }
-    cx /= pts.size(); cy /= pts.size();
+double sampsonDistance(const cv::Point2f & pt_left, const cv::Point2f & pt_right, const cv::Mat & F) {
+    cv::Mat x_left = (cv::Mat_<double>(3,1) << pt_left.x, pt_left.y, 1.0);
+    cv::Mat x_right = (cv::Mat_<double>(3,1) << pt_right.x, pt_right.y, 1.0);
 
-    // Mean distance from centroid
-    double dist = 0;
-    for (const auto& p : pts)
-        dist += std::sqrt((p.x - cx)*(p.x - cx) + (p.y - cy)*(p.y - cy));
-    dist /= pts.size();
-
-    double scale = (dist < 1e-9) ? 1.0 : std::sqrt(2.0) / dist;
-
-    pts_n.resize(pts.size());
-    for (size_t i = 0; i < pts.size(); ++i)
-        pts_n[i] = { (float)((pts[i].x - cx) * scale),
-                     (float)((pts[i].y - cy) * scale) };
-
-    cv::Mat T = (cv::Mat_<double>(3,3)
-        << scale,   0,  -scale * cx,
-              0, scale, -scale * cy,
-              0,     0,           1);
-    return T;
+    cv::Mat l_right  = F  * x_left;
+    cv::Mat l_left = F.t() * x_right;
+    double  num  = cv::Mat(x_right.t() * l_right).at<double>(0,0);
+    double  den  = l_right.at<double>(0)*l_right.at<double>(0)
+                 + l_right.at<double>(1)*l_right.at<double>(1)
+                 + l_left.at<double>(0)*l_left.at<double>(0)
+                 + l_left.at<double>(1)*l_left.at<double>(1);
+    return std::sqrt((num * num) / (den + 1e-10));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Normalised 8-point algorithm (Hartley 1997)
-// ─────────────────────────────────────────────────────────────────────────────
-cv::Mat estimateFundamentalManual(const std::vector<cv::Point2f>& pts1,
-                                   const std::vector<cv::Point2f>& pts2) {
-    assert(pts1.size() == pts2.size() && pts1.size() >= 8);
-    int N = (int)pts1.size();
-
-    // 1. Normalise
-    std::vector<cv::Point2f> p1n, p2n;
-    cv::Mat T1 = normalisePoints(pts1, p1n);
-    cv::Mat T2 = normalisePoints(pts2, p2n);
-
-    // 2. Build A (N × 9)
-    //    Each row: [x2*x1, x2*y1, x2, y2*x1, y2*y1, y2, x1, y1, 1]
-    cv::Mat A(N, 9, CV_64F);
-    for (int i = 0; i < N; ++i) {
-        double x1 = p1n[i].x, y1 = p1n[i].y;
-        double x2 = p2n[i].x, y2 = p2n[i].y;
-        double* row = A.ptr<double>(i);
-        row[0]=x2*x1; row[1]=x2*y1; row[2]=x2;
-        row[3]=y2*x1; row[4]=y2*y1; row[5]=y2;
-        row[6]=x1;    row[7]=y1;    row[8]=1.0;
     }
 
-    // 3. SVD(A) → f is last column of V
-    cv::Mat U, S, Vt;
-    cv::SVD::compute(A, S, U, Vt, cv::SVD::FULL_UV);
-    cv::Mat f = Vt.row(8).reshape(0, 3);         // 3×3
 
-    // 4. Enforce rank-2: SVD(F), zero out smallest singular value
-    cv::SVD::compute(f, S, U, Vt, cv::SVD::FULL_UV);
-    S.at<double>(2) = 0.0;
-    cv::Mat F_tilde = U * cv::Mat::diag(S) * Vt;
 
-    // 5. Denormalise: F = T2^T * F_tilde * T1
-    cv::Mat F = T2.t() * F_tilde * T1;
 
-    // 6. Normalise so ||F||_F = 1
-    double nrm = cv::norm(F);
-    if (nrm > 1e-12) F /= nrm;
 
-    return F;
+
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sampson distance (first-order geometric error)
-//   d = (x2^T F x1)^2 / ( (Fx1)[0]^2 + (Fx1)[1]^2 + (F^T x2)[0]^2 + (F^T x2)[1]^2 )
-// ─────────────────────────────────────────────────────────────────────────────
-static double sampsonDistance(const cv::Mat& F,
-                               const cv::Point2f& p1,
-                               const cv::Point2f& p2) {
-    cv::Mat x1 = (cv::Mat_<double>(3,1) << p1.x, p1.y, 1.0);
-    cv::Mat x2 = (cv::Mat_<double>(3,1) << p2.x, p2.y, 1.0);
 
-    cv::Mat Fx1  = F  * x1;
-    cv::Mat Ftx2 = F.t() * x2;
-    double  num  = cv::Mat(x2.t() * Fx1).at<double>(0,0);
-    double  den  = Fx1.at<double>(0)*Fx1.at<double>(0)
-                 + Fx1.at<double>(1)*Fx1.at<double>(1)
-                 + Ftx2.at<double>(0)*Ftx2.at<double>(0)
-                 + Ftx2.at<double>(1)*Ftx2.at<double>(1);
-    return (den < 1e-12) ? 1e12 : (num * num) / den;
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// RANSAC wrapper around the manual 8-point estimator
-// ─────────────────────────────────────────────────────────────────────────────
-static cv::Mat ransacFundamental(const std::vector<cv::Point2f>& pts1,
-                                  const std::vector<cv::Point2f>& pts2,
-                                  std::vector<uchar>& inlier_mask,
-                                  double threshold = 1.5,
-                                  int max_iter     = 2000,
-                                  double conf      = 0.99) {
-    int N = (int)pts1.size();
-    inlier_mask.assign(N, 0);
-
-    std::mt19937 rng(42);
-    std::vector<int> idx(N);
-    std::iota(idx.begin(), idx.end(), 0);
-
-    cv::Mat best_F;
-    int best_inliers = 0;
-
-    for (int iter = 0; iter < max_iter; ++iter) {
-        // Sample 8 random indices
-        std::shuffle(idx.begin(), idx.end(), rng);
-        std::vector<cv::Point2f> s1(8), s2(8);
-        for (int i = 0; i < 8; ++i) {
-            s1[i] = pts1[idx[i]];
-            s2[i] = pts2[idx[i]];
-        }
-
-        cv::Mat F = estimateFundamentalManual(s1, s2);
-        if (F.empty()) continue;
-
-        // Count inliers
-        std::vector<uchar> mask(N, 0);
-        int n_in = 0;
-        for (int i = 0; i < N; ++i) {
-            if (sampsonDistance(F, pts1[i], pts2[i]) < threshold) {
-                mask[i] = 1; ++n_in;
             }
         }
 
-        if (n_in > best_inliers) {
-            best_inliers = n_in;
-            best_F       = F.clone();
-            inlier_mask  = mask;
-
-            // Adaptive iteration count
-            double w = (double)n_in / N;
-            if (w > 1.0 - 1e-9) break;
-            double new_max = std::log(1.0 - conf) /
-                             std::log(1.0 - std::pow(w, 8));
-            max_iter = std::min(max_iter, (int)std::ceil(new_max));
         }
-    }
 
-    // Re-estimate F on all inliers
-    std::vector<cv::Point2f> in1, in2;
-    for (int i = 0; i < N; ++i)
-        if (inlier_mask[i]) { in1.push_back(pts1[i]); in2.push_back(pts2[i]); }
 
-    if ((int)in1.size() >= 8)
-        best_F = estimateFundamentalManual(in1, in2);
 
-    return best_F;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Cheirality test: returns the (R,t) pair from the 4 SVD candidates where the
-// most points triangulate in front of both cameras.
-// ─────────────────────────────────────────────────────────────────────────────
-static void recoverRtFromE(const cv::Mat& E,
-                            const std::vector<cv::Point2f>& pts1,
-                            const std::vector<cv::Point2f>& pts2,
-                            const cv::Mat& K,
-                            cv::Mat& R_out, cv::Mat& t_out) {
-    // SVD of E
-    cv::Mat U, S, Vt;
-    cv::SVD::compute(E, S, U, Vt);
 
-    // Enforce singular values = [1,1,0]
-    cv::Mat S2 = (cv::Mat_<double>(3,1) << 1, 1, 0);
-    cv::Mat E2 = U * cv::Mat::diag(S2) * Vt;
-    cv::SVD::compute(E2, S, U, Vt);
-
-    // Ensure det(U)*det(Vt) = +1 (proper rotation)
-    if (cv::determinant(U) < 0) U  *= -1.0;
-    if (cv::determinant(Vt)< 0) Vt *= -1.0;
-
-    cv::Mat W = (cv::Mat_<double>(3,3) << 0,-1,0, 1,0,0, 0,0,1);
-
-    cv::Mat R1 = U *  W   * Vt;
-    cv::Mat R2 = U *  W.t()* Vt;
-    cv::Mat t_pos =  U.col(2);
-    cv::Mat t_neg = -U.col(2);
-
-    // 4 candidate solutions
-    cv::Mat Rs[4] = { R1, R1, R2, R2 };
-    cv::Mat ts[4] = { t_pos, t_neg, t_pos, t_neg };
-
-    // Count positive-depth points for each candidate (simplified cheirality)
-    auto countPositiveDepth = [&](const cv::Mat& R, const cv::Mat& t) -> int {
-        // P0 = K [I | 0]   P1 = K [R | t]
-        cv::Mat P0 = K * cv::Mat::eye(3, 4, CV_64F);
-        cv::Mat Rt(3, 4, CV_64F);
-        R.copyTo(Rt.colRange(0,3));
-        t.copyTo(Rt.col(3));
-        cv::Mat P1 = K * Rt;
-
-        int count = 0;
-        for (size_t i = 0; i < std::min(pts1.size(), (size_t)50); ++i) {
-            // Linear triangulation
-            cv::Mat A(4, 4, CV_64F);
-            A.row(0) = pts1[i].x * P0.row(2) - P0.row(0);
-            A.row(1) = pts1[i].y * P0.row(2) - P0.row(1);
-            A.row(2) = pts2[i].x * P1.row(2) - P1.row(0);
-            A.row(3) = pts2[i].y * P1.row(2) - P1.row(1);
-            cv::Mat Ua, Sa, Va;
-            cv::SVD::compute(A, Sa, Ua, Va, cv::SVD::FULL_UV);
-            cv::Mat X = Va.row(3).t();  // homogeneous
-            double w  = X.at<double>(3);
-            double Z0 = X.at<double>(2) / w;                         // depth cam0
-            cv::Mat Xc1 = R * (X.rowRange(0,3) / w) + t;
-            double Z1  = Xc1.at<double>(2);
-            if (Z0 > 0 && Z1 > 0) ++count;
-        }
-        return count;
-    };
-
-    int best = -1, best_count = -1;
-    for (int i = 0; i < 4; ++i) {
-        int c = countPositiveDepth(Rs[i], ts[i]);
-        if (c > best_count) { best_count = c; best = i; }
+SparseMatchResult computeSparseMatches(cv::Mat& imgLeft, cv::Mat& imgRight, CalibData & calib, bool run_opencv, const SparseMatchParams& params) {
+    SparseMatchResult result;
+    try {
+        result = run_opencv ? computeSparseMatchesOpenCV(imgLeft, imgRight, calib, params) : computeSparseMatchesCustom(imgLeft, imgRight, calib, params);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("[sparse matching] Sparse matching failed: ") + e.what());
     }
-    R_out = Rs[best].clone();
-    t_out = ts[best].clone();
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Main sparse matching pipeline
-// ─────────────────────────────────────────────────────────────────────────────
-SparseMatchResult computeSparseMatches(const cv::Mat& left,
-                                        const cv::Mat& right,
-                                        const CalibData& calib) {
+    if (result.R.empty()) {
+        throw std::runtime_error(std::string("[sparse matching] Pose recovery failed. Sparse matching (")
+            + (run_opencv ? "OpenCV" : "manual implementation")
+            + ") produces empty R.\n");
+    }
+
+    calib.R_rel = result.R;
+    calib.t_rel = result.t * calib.baseline;  // result.t is unit-length; scale to metric here
+    calib.F = result.F;
+
+    calib.verifyLeftRightCameraOrder();
+
+    std::cout << "[sparse matching]: Sparse matching (" << (run_opencv ? "OpenCV" : "Manual") << ") finished." << std::endl;
+
+    return result;
+};
+
+
+SparseMatchResult computeSparseMatchesOpenCV(const cv::Mat& imgLeft, const cv::Mat& imgRight, const CalibData& calib, const SparseMatchParams& params) {
     SparseMatchResult result;
 
-    cv::Mat gray_l, gray_r;
-    if (left.channels()  == 3) cv::cvtColor(left,  gray_l, cv::COLOR_BGR2GRAY);
-    else gray_l = left;
-    if (right.channels() == 3) cv::cvtColor(right, gray_r, cv::COLOR_BGR2GRAY);
-    else gray_r = right;
+    // Convert to grayscale for SIFT
+    cv::Mat grayL, grayR;
+    cv::cvtColor(imgLeft,  grayL, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(imgRight, grayR, cv::COLOR_BGR2GRAY);
 
-    // ── 1. SIFT detection ─────────────────────────────────────────────────
-    auto sift = cv::SIFT::create(3000);
-    std::vector<cv::KeyPoint> kp_l, kp_r;
-    cv::Mat desc_l, desc_r;
-    sift->detectAndCompute(gray_l, cv::noArray(), kp_l, desc_l);
-    sift->detectAndCompute(gray_r, cv::noArray(), kp_r, desc_r);
+    // 1. Keypoint Detection using SIFT
+        // TODO: Add multiple descriptors (e.g. ORB)
+    auto sift = cv::SIFT::create(params.sift_features, params.sift_octave_layers,
+                                  params.sift_contrast_thresh, params.sift_edge_thresh,
+                                  params.sift_sigma);
 
-    if (kp_l.empty() || kp_r.empty()) {
-        std::cerr << "[sparse] No keypoints found.\n";
-        return result;
-    }
+    std::vector<cv::KeyPoint> kpL, kpR;
+    cv::Mat descL, descR;
+    sift->detectAndCompute(grayL, cv::noArray(), kpL, descL);
+    sift->detectAndCompute(grayR, cv::noArray(), kpR, descR);
 
-    // ── 2. BFMatcher + Lowe ratio test ────────────────────────────────────
+    // 2. Match descriptors using BFMatches
     cv::BFMatcher matcher(cv::NORM_L2);
     std::vector<std::vector<cv::DMatch>> knn;
-    matcher.knnMatch(desc_l, desc_r, knn, 2);
+    matcher.knnMatch(descL, descR, knn, 2);
+
+    // 3. Find good matches using Lowe's ratio test
+    std::vector<float> matchDist;
 
     for (auto& m : knn) {
-        if (m.size() < 2) continue;
-        if (m[0].distance < 0.75f * m[1].distance) {
-            result.pts_left .push_back(kp_l[m[0].queryIdx].pt);
-            result.pts_right.push_back(kp_r[m[0].trainIdx].pt);
+        if (m.size() >= 2 && m[0].distance < params.ratio_threshold * m[1].distance) {
+            result.pts_left.push_back(kpL[m[0].queryIdx].pt);
+            result.pts_right.push_back(kpR[m[0].trainIdx].pt);
+            matchDist.push_back(m[0].distance);  // For substep
         }
     }
     result.n_matches = (int)result.pts_left.size();
-    std::cout << "[sparse] Keypoints L=" << kp_l.size()
-              << " R=" << kp_r.size()
-              << "  Matches after Lowe=" << result.n_matches << "\n";
 
-    if (result.n_matches < 8) {
-        std::cerr << "[sparse] Too few matches.\n";
-        return result;
+
+    // 4. Estimate fundamental matrix with RANSAC.
+
+    if (result.pts_left.size() < 8) {
+        throw std::runtime_error(std::string("[sparse matching] Not enough points (<8) to run 8-point algorithm."));
     }
-
-    // ── 3. RANSAC + manual 8-point ────────────────────────────────────────
-    result.F = ransacFundamental(result.pts_left, result.pts_right,
-                                  result.inlier_mask,
-                                  /*threshold=*/1.5,
-                                  /*max_iter=*/ 3000);
-
-    result.n_inliers = 0;
-    for (uchar v : result.inlier_mask) if (v) ++result.n_inliers;
-
-    std::cout << "[sparse] RANSAC inliers=" << result.n_inliers
-              << " / " << result.n_matches << "\n";
+    result.F = cv::findFundamentalMat(result.pts_left, result.pts_right,
+                                      cv::FM_RANSAC, params.ransac_threshold, 0.999, result.inlier_mask);
 
     if (result.F.empty()) {
-        std::cerr << "[sparse] F estimation failed.\n";
-        return result;
+        throw std::runtime_error(std::string("[sparse matching] RANSAC failed to find a valid model."));
+    }
+
+    // Collect RANSAC inlier pairs.
+    std::vector<cv::Point2f> inl_left, inl_right;
+    double total_err = 0.0;
+    for (size_t i = 0; i < result.pts_left.size(); ++i)
+        if (result.inlier_mask[i]) {
+            cv::Point2f pt_inl_left = result.pts_left[i];
+            cv::Point2f pt_inl_right = result.pts_right[i];
+            inl_left.push_back(pt_inl_left);
+            inl_right.push_back(pt_inl_right);
+            
+            // Compute mean Sampson epipolar error over RANSAC inliers
+            total_err += sampsonDistance(pt_inl_left, pt_inl_right, result.F);
+            result.n_inliers++;
+        }
+
+    result.mean_epipolar_error = result.n_inliers > 0 ? total_err / result.n_inliers : 0.0;
+
+    // 5. Derive essential matrix E from F and intrinsics.
+    // E = K1^T · F · K0  (see derivation: F relates pixel coords, E relates normalised coords)
+    cv::Mat K0 = calib.K0, K1 = calib.K1;
+    result.E = K1.t() * result.F * K0;
+
+
+    // 6. Recover pose
+    std::vector<cv::Point2f> inl_left_norm, inl_right_norm;
+    cv::undistortPoints(inl_left,  inl_left_norm,  K0, cv::noArray()); // no known distortion coefficients -> noArray()
+    cv::undistortPoints(inl_right, inl_right_norm, K1, cv::noArray());
+
+
+    std::vector<uchar> pose_mask(inl_left.size(), 1);
+    result.n_pose_inliers = cv::recoverPose(result.E, inl_left_norm, inl_right_norm,
+        cv::Mat::eye(3, 3, CV_64F),
+        result.R, result.t,
+        params.chirality_depth,
+        pose_mask
+    );
+
+
+    return result;
+};
+
     }
 
     // ── 4. Mean epipolar error on inliers ─────────────────────────────────
@@ -336,6 +195,86 @@ SparseMatchResult computeSparseMatches(const cv::Mat& left,
               << "[sparse] t =  " << result.t.t() << "\n";
 
     return result;
+};
+
+void saveMatchVisualization(const cv::Mat& imgLeft, const cv::Mat& imgRight,
+                             const SparseMatchResult& result,
+                             const std::string& saveDir,
+                             const std::string& runName,
+                             const std::string& viewL,
+                             const std::string& viewR,
+                             double rotErrDeg,
+                             double transErrDeg,
+                             bool inliersOnly) {
+    fs::create_directories(saveDir);
+
+    const std::string imgPath = saveDir + "/matches_" + runName + "_"
+                                + viewL + "_" + viewR + ".png";
+
+    // ── Visualization ────────────────────────────────────────────────────────
+    // Collect the point pairs to draw, respecting inlier filter and cap.
+    std::vector<cv::Point2f> drawL, drawR;
+    for (size_t i = 0; i < result.pts_left.size(); ++i) {
+        if (inliersOnly && !result.inlier_mask.empty() && !result.inlier_mask[i]) continue;
+        drawL.push_back(result.pts_left[i]);
+        drawR.push_back(result.pts_right[i]);
+    }
+    if (drawL.empty()) {
+        std::cout << "[sparse_matching] No matches to visualize.\n";
+    } else {
+        // Draw manually for thickness control: images side-by-side, circles + connecting lines.
+        cv::Mat vis;
+        cv::hconcat(imgLeft, imgRight, vis);
+        const int offset = imgLeft.cols;
+        cv::RNG rng(0);
+        for (size_t i = 0; i < drawL.size(); ++i) {
+            cv::Scalar color(rng.uniform(0,256), rng.uniform(0,256), rng.uniform(0,256));
+            cv::Point2f ptR(drawR[i].x + offset, drawR[i].y);
+            cv::circle(vis, drawL[i], 4, color, 2);
+            cv::circle(vis, ptR,      4, color, 2);
+            cv::line(vis, drawL[i], ptR, color, 1);
+        }
+        cv::imwrite(imgPath, vis);
+        std::cout << "[sparse_matching] Match visualisation saved to " << imgPath << "\n";
+    }
+
+    // ── CSV log ──────────────────────────────────────────────────────────────
+    const std::string logPath  = saveDir + "/results_log.csv";
+    const bool        logExists = fs::exists(logPath);
+
+    // Skip if this exact (run_name, viewL, viewR) tuple is already recorded,
+    // so a stable baseline is never accidentally overwritten.
+    const std::string key = runName + "," + viewL + "," + viewR;
+    if (logExists) {
+        std::ifstream fin(logPath);
+        std::string line;
+        while (std::getline(fin, line)) {
+            if (line.rfind(key, 0) == 0) {
+                std::cout << "[sparse_matching] '" << runName << "' already in log; skipping.\n";
+                return;
+            }
+        }
+    }
+
+    std::ofstream fout(logPath, std::ios::app);
+    if (!logExists)
+        fout << "run_name,view_L,view_R,inliers_only,max_matches,"
+                "n_matches,n_inliers,n_pose_inliers,mean_epipolar_error_px,"
+                "rot_err_deg,trans_err_deg\n";
+
+    fout << key << ","
+         << (inliersOnly ? 1 : 0) << ","
+         << result.n_matches << ","
+         << result.n_inliers << ","
+         << result.n_pose_inliers << ","
+         << std::fixed << std::setprecision(4) << result.mean_epipolar_error << ",";
+    if (rotErrDeg >= 0.0)
+        fout << std::fixed << std::setprecision(4) << rotErrDeg << ","
+             << std::fixed << std::setprecision(4) << transErrDeg << "\n";
+    else
+        fout << "N/A,N/A\n";
+
+    std::cout << "[sparse_matching] Results logged to " << logPath << "\n";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
