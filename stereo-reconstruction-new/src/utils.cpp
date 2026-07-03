@@ -86,7 +86,7 @@ void CalibData::verifyLeftRightCameraOrder() {
     if (!hasRelativePose()) {
         throw std::runtime_error("[verify L/R] Cannot verify left/right camera order: missing relative pose (R_rel, t_rel).");
     }
-    if (t_rel.at<double>(0) < 0) {  // Checking the x-axis translation (if the right camera is geometrically to the left of the left camera)
+    if (t_rel.at<double>(0) > 0) {  // In OpenCV recoverPose convention (x2 = R*x1 + t), t[0] < 0 means camera 2 is to the RIGHT (correct order). Swap only when t[0] > 0 (camera 2 is to the LEFT).
         std::cout << "[verify L/R]: Right camera is geometrically to the left of the left camera. Swapping L/R.\n";
         
         if (!hasIntrinsics()) {
