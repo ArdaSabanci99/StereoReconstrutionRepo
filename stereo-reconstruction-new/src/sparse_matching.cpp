@@ -375,6 +375,16 @@ SparseMatchResult computeSparseMatchesCustom(const cv::Mat & imgLeft, const cv::
     return result;
 };
 
+void saveSparseMatchInliers(const SparseMatchResult& result, const std::string& path) {
+    std::vector<cv::Point2f> in_l, in_r;
+    for (int i = 0; i < result.n_matches; ++i)
+        if (result.inlier_mask[i]) {
+            in_l.push_back(result.pts_left[i]);
+            in_r.push_back(result.pts_right[i]);
+        }
+    saveInlierPoints(in_l, in_r, path);
+}
+
 void saveMatchVisualization(const cv::Mat& imgLeft, const cv::Mat& imgRight,
                              const SparseMatchResult& result,
                              const std::string& saveDir,
@@ -514,6 +524,7 @@ int main(int argc, char** argv) {
     fs::create_directories(savePath);
 
     saveCalibData(calib, savePath + "/calib_" + viewL + "_" + viewR + ".yaml");
+    saveSparseMatchInliers(result, savePath + "/inliers_" + viewL + "_" + viewR + ".yaml");
     std::cout << "[sparse_matching] Calib saved to " << savePath << "\n";
 
     saveMatchVisualization(imgL, imgR, result, savePath, "baseline", viewL, viewR);

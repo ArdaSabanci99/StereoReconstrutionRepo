@@ -41,6 +41,15 @@ struct CalibData {
 void saveCalibData(const CalibData& calib, const std::string& path);
 CalibData loadCalibData(const std::string& path);
 
+// ── Inlier correspondences serialisation ────────────────────────────────────
+// Saves/loads the RANSAC inlier point pairs produced by sparse matching, required by rectifyManual
+void saveInlierPoints(const std::vector<cv::Point2f>& left,
+                      const std::vector<cv::Point2f>& right,
+                      const std::string& path);
+void loadInlierPoints(const std::string& path,
+                      std::vector<cv::Point2f>& left,
+                      std::vector<cv::Point2f>& right);
+
 // ── Disparity save / load (16-bit PNG, scale ×16) ───────────────────────────
 void saveDisparity(const cv::Mat& disp, const std::string& path);
 cv::Mat loadDisparity(const std::string& path);

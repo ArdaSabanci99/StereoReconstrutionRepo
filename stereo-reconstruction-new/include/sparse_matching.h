@@ -67,6 +67,9 @@ double sampsonDistance(const cv::Point2f& pt_left, const cv::Point2f& pt_right, 
 
 
 
+// Saves the RANSAC inlier point pairs to a YAML file for use by rectifyManual.
+void saveSparseMatchInliers(const SparseMatchResult& result, const std::string& path);
+
 void saveMatchVisualization(const cv::Mat& imgLeft, const cv::Mat& imgRight,
                              const SparseMatchResult& result,
                              const std::string& saveDir,

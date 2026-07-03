@@ -63,6 +63,25 @@ CalibData loadCalibData(const std::string& path) {
     return calib;
 }
 
+void saveInlierPoints(const std::vector<cv::Point2f>& left,
+                      const std::vector<cv::Point2f>& right,
+                      const std::string& path) {
+    cv::FileStorage fs(path, cv::FileStorage::WRITE);
+    if (!fs.isOpened())
+        throw std::runtime_error("[inliers] Cannot open for writing: " + path);
+    fs << "inlier_pts_left" << left << "inlier_pts_right" << right;
+}
+
+void loadInlierPoints(const std::string& path,
+                      std::vector<cv::Point2f>& left,
+                      std::vector<cv::Point2f>& right) {
+    cv::FileStorage fs(path, cv::FileStorage::READ);
+    if (!fs.isOpened())
+        throw std::runtime_error("[inliers] Cannot open: " + path);
+    fs["inlier_pts_left"]  >> left;
+    fs["inlier_pts_right"] >> right;
+}
+
 void CalibData::verifyLeftRightCameraOrder() {
     if (!hasRelativePose()) {
         throw std::runtime_error("[verify L/R] Cannot verify left/right camera order: missing relative pose (R_rel, t_rel).");
