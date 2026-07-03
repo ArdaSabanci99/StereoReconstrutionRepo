@@ -15,7 +15,7 @@ RectifyResult rectifyOpenCV(const cv::Mat& left, const cv::Mat& right,
     cv::Mat D1 = cv::Mat::zeros(5, 1, CV_64F);
     cv::Mat R0, R1, P1, P2, Q;
     cv::stereoRectify(calib.K0, D0, calib.K1, D1,
-                      sz, calib.R_rel, calib.T_rel,
+                      sz, calib.R_rel, calib.t_rel,
                       R0, R1, P1, P2, Q, cv::CALIB_ZERO_DISPARITY, -1);
 
     cv::Mat m0x, m0y, m1x, m1y;
@@ -32,6 +32,7 @@ RectifyResult rectifyOpenCV(const cv::Mat& left, const cv::Mat& right,
     std::cout << "[rectification] OpenCV done.\n";
     return res;
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -169,8 +170,9 @@ static cv::Mat buildQ(const cv::Mat& K, double baseline) {
 // Manual Loop-Zhang rectification
 // ─────────────────────────────────────────────────────────────────────────────
 RectifyResult rectifyManual(const cv::Mat& left, const cv::Mat& right,
-                              const cv::Mat& F,
-                              const CalibData& calib) {
+                              const CalibData& calib,
+                              const std::vector<cv::Point2f>& in_l,
+                              const std::vector<cv::Point2f>& in_r) {
     RectifyResult res;
     int W = left.cols, H = left.rows;
 
@@ -186,23 +188,8 @@ RectifyResult rectifyManual(const cv::Mat& left, const cv::Mat& right,
     // ── 2. H2: send right epipole to infinity ────────────────────────────
     res.H2 = buildH2(e2, W, H);
 
-    // ── 3. Inlier correspondences for H1 fitting ─────────────────────────
-    //  We need matched point pairs — recompute sparse matches
-    SparseMatchResult sparse = computeSparseMatches(left, right, calib);
-    if (sparse.n_inliers < 4) {
-        std::cout << "[rectify] Not enough inliers, falling back to OpenCV.\n";
-        return rectifyOpenCV(left, right, calib);
-    }
-
-    std::vector<cv::Point2f> in_l, in_r;
-    for (int i = 0; i < sparse.n_matches; ++i)
-        if (sparse.inlier_mask[i]) {
-            in_l.push_back(sparse.pts_left[i]);
-            in_r.push_back(sparse.pts_right[i]);
-        }
-
     // ── 4. H1: affine correction to minimise vertical disparity ──────────
-    res.H1 = buildH1(res.H2, in_l, in_r, F, W, H);
+    res.H1 = buildH1(res.H2, in_l, in_r, calib.F, W, H);
 
     // ── 5. Warp images ───────────────────────────────────────────────────
     cv::Size sz(W, H);
@@ -211,7 +198,7 @@ RectifyResult rectifyManual(const cv::Mat& left, const cv::Mat& right,
 
     // ── 6. Build Q matrix for depth computation ───────────────────────────
     // Estimate baseline from calibration T_rel
-    double B = cv::norm(calib.T_rel);
+    double B = cv::norm(calib.t_rel);
     res.Q = buildQ(calib.K0, -B);
 
     // Store R0_rect as identity (we used homographies, not rotation decomp)
@@ -276,7 +263,14 @@ int main(int argc, char** argv) {
     if (imgL.empty() || imgR.empty()) { std::cerr << "Could not load images.\n"; return 1; }
     
 
-    RectifyResult res = manual ? rectifyManual(imgL, imgR, calib) : rectifyOpenCV(imgL, imgR, calib);
+    std::vector<cv::Point2f> in_l, in_r;
+    if (manual) {
+        std::string inliers_path = "results/scene" + sceneId +
+            "/sparse_matching/inliers_" + viewL + "_" + viewR + ".yaml";
+        loadInlierPoints(inliers_path, in_l, in_r);
+    }
+    RectifyResult res = manual ? rectifyManual(imgL, imgR, calib, in_l, in_r)
+                               : rectifyOpenCV(imgL, imgR, calib);
 
     std::string savePath = "results/scene" + sceneId + "/rectification";
     fs::create_directories(savePath);
