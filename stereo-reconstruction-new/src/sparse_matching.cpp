@@ -150,11 +150,11 @@ size_t recoverPose(const std::vector<Eigen::Vector3d>& pts_left_norm, const std:
             best_candidate_idx = candidate_idx;
         }
 
-        std::cout << "[sparse matching - recover pose]: Candidate " << candidate_idx + 1 << " has votes (n_inliers) " << cur_inlier_count << std::endl;
+        std::cout << "[sparse matching]: Recover pose candidate " << candidate_idx + 1 << " has votes (n_inliers) " << cur_inlier_count << std::endl;
 
     }
 
-    std::cout << "[sparse matching - recover pose]: Best Candidate " << best_candidate_idx + 1 << std::endl;
+    std::cout << "[sparse matching]: Recover pose best candidate " << best_candidate_idx + 1 << std::endl;
     
     std::tie(R, t) = candidates[best_candidate_idx];
     
@@ -182,6 +182,12 @@ SparseMatchResult computeSparseMatches(cv::Mat& imgLeft, cv::Mat& imgRight, Cali
     calib.F = result.F;
 
     calib.verifyLeftRightCameraOrder();
+
+    std::cout << "[sparse_matching] Matches after ratio test: " << result.n_matches << "\n";
+    std::cout << "[sparse_matching] RANSAC inliers: " << result.n_inliers << "/" << result.n_matches << "\n";
+    std::cout << "[sparse_matching] Mean Sampson error (inliers): " << result.mean_epipolar_error << " px\n";
+    std::cout << "[sparse_matching] Pose cheirality inliers: " << result.n_pose_inliers
+              << " / RANSAC inliers: " << result.n_inliers << "\n";
 
     std::cout << "[sparse matching]: Sparse matching (" << (run_opencv ? "OpenCV" : "Manual") << ") finished." << std::endl;
 
