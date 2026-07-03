@@ -19,8 +19,11 @@ set(Flann_INCLUDE_DIR ${LIBRARY_DIR}/Flann-1.8.4/                  CACHE PATH "F
 # ── OpenCV ────────────────────────────────────────────────────────────────
 if(WIN32 AND NOT DEFINED OpenCV_DIR)
   foreach(_candidate
+      # 1. Check specific MSVC 64-bit paths FIRST
+      "C:/opencv/build/x64/vc16/lib"  # Visual Studio 2019
+      "C:/opencv/build/x64/vc15/lib"  # Visual Studio 2017
+      # 2. Then fall back to general build paths
       "C:/opencv/build"
-      "C:/opencv/build/x64/vc16/lib"
       "C:/tools/opencv/build"
       "$ENV{USERPROFILE}/opencv/build")
     if(EXISTS "${_candidate}/OpenCVConfig.cmake" OR
@@ -35,7 +38,6 @@ endif()
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
-
 # ── Eigen ─────────────────────────────────────────────────────────────────
 find_package(Eigen3 REQUIRED)
 message(STATUS "Eigen3 found: ${EIGEN3_INCLUDE_DIR}")
