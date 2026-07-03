@@ -8,7 +8,7 @@
 namespace fs = std::filesystem;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Disparity → depth map  Z = f * B / (d + doffs)
+// Disparity → depth map  Z = f * B / (d)
 // ─────────────────────────────────────────────────────────────────────────────
 cv::Mat disparityToDepth(const cv::Mat& disparity, const CalibData& calib) {
     double f = calib.K0.at<double>(0, 0);
@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
     
     double f  = calib.K0.at<double>(0,0);
     double cx = calib.K0.at<double>(0,2), cy = calib.K0.at<double>(1,2);
-    double B  = cv::norm(calib.T_rel);
+    double B  = cv::norm(calib.t_rel);
     // Q: Tx = -B (right camera is to the right, so Tx < 0)
     // q32 = -1/Tx = 1/B → Z = f/W = f*B/d > 0 for d > 0.
     cv::Mat Q = (cv::Mat_<double>(4,4)
