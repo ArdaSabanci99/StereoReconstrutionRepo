@@ -12,11 +12,13 @@ struct RectifyResult {
     cv::Mat P1, P2;      // rectified projection matrices
 };
 
-// Manual Loop-Zhang rectification using F + K from calib.
-// F is estimated from sparse matching; K from calib.K0 / calib.K1.
-RectifyResult rectifyManual(const cv::Mat& left, const cv::Mat& right,
-                              const cv::Mat& F,
-                              const CalibData& calib);
+// Loop-Zhang Rectification
+// Uses pure uncalibrated geometry. F is estimated from sparse matching.
+// cv_pts_l and cv_pts_r must be the filtered, verified INLIER matched points.
+RectifyResult rectifyLoopZhang(const cv::Mat& left, const cv::Mat& right,
+    const cv::Mat& F_cv,
+    const std::vector<cv::Point2f>& cv_pts_l,
+    const std::vector<cv::Point2f>& cv_pts_r);
 
 // OpenCV baseline (for comparison / fallback)
 RectifyResult rectifyOpenCV(const cv::Mat& left, const cv::Mat& right,

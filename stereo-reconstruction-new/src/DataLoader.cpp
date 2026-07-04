@@ -6,7 +6,7 @@ DTUDataLoader::DTUDataLoader(const std::string & data_path)
     : m_data_path(data_path) {}
 
 cv::Mat DTUDataLoader::loadImage(const std::string & sceneId, const std::string & viewId, const std::string & lightId) {
-    std::string img_path = m_data_path + "/Rectified/scan" + sceneId 
+    std::string img_path = m_data_path + "/Cleaned/scan" + sceneId 
     + "/rect_" + viewId + "_" + lightId + "_r5000.png";
 
     cv::Mat img = cv::imread(img_path);

@@ -113,10 +113,26 @@ int main(int argc, char** argv) {
     // ── 3. Rectification ─────────────────────────────────────────────────
     std::cout << "\n=== Rectification (" << (manual_rect ? "Loop-Zhang" : "OpenCV") << ") ===\n";
     RectifyResult rect;
-    if (manual_rect && !sparse.F.empty())
-        rect = rectifyManual(imgL, imgR, sparse.F, calib);
+    if (manual_rect && !sparse.F.empty()) {
+        // Extract only the verified inlier points for the Loop-Zhang affine alignment step
+        std::vector<cv::Point2f> inliersL, inliersR;
+        inliersL.reserve(sparse.n_inliers);
+        inliersR.reserve(sparse.n_inliers);
+
+        for (int i = 0; i < sparse.n_matches; ++i) {
+            if (sparse.inlier_mask[i]) {
+                inliersL.push_back(sparse.pts_left[i]);
+                inliersR.push_back(sparse.pts_right[i]);
+            }
+        }
+
+        // Call the specific Loop-Zhang orchestration function with the filtered points
+        rect = rectifyLoopZhang(imgL, imgR, sparse.F, inliersL, inliersR);
+    }
     else
         rect = rectifyOpenCV(imgL, imgR, calib);
+
+
 
     std::string rect_path = "results/scene" + sceneId + "/rectification";
     fs::create_directories(rect_path);
