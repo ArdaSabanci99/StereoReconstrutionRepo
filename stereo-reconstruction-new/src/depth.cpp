@@ -30,6 +30,10 @@ PointCloud disparityToCloud(const cv::Mat& disp, const cv::Mat& Q,
                              const cv::Mat& color_img,
                              float min_disp, float max_depth) {
     // Manual implementation (avoids cv::reprojectImageTo3D dependency)
+    
+    // Extract the specific coefficients from the Q matrix.
+    // These constants represent the camera focal length (f), principal center (cx, cy),
+    // and the stereo baseline (Tx), which define the mapping from 2D to 3D.
     double q03 = Q.at<double>(0,3);   // -cx
     double q13 = Q.at<double>(1,3);   // -cy
     double q23 = Q.at<double>(2,3);   // f
@@ -39,22 +43,31 @@ PointCloud disparityToCloud(const cv::Mat& disp, const cv::Mat& Q,
     bool has_color = !color_img.empty();
     PointCloud cloud;
 
+    // Iterate through every pixel in the disparity map.
     for (int y = 0; y < disp.rows; ++y)
         for (int x = 0; x < disp.cols; ++x) {
             float d = disp.at<float>(y, x);
+
+            // Reject invalid points (where disparity is too low or invalid).
             if (d < min_disp) continue;
 
-            double W  = q32 * d + q33;
+            
+            // Calculate the homogeneous coordinate denominator (W).
+            double W = q32 * d + q33;
             if (std::abs(W) < 1e-9) continue;
 
+            // Triangulate: Convert (x, y, disparity) to (X, Y, Z) in 3D camera space.
             float X = (float)((x + q03) / W);
             float Y = (float)((y + q13) / W);
             float Z = (float)(q23 / W);
 
+            // Validity check based on physical depth constraints.
             if (Z <= 0 || Z > max_depth) continue;
 
+            // Store the computed 3D point in the cloud.
             cloud.points.emplace_back(X, Y, Z);
 
+            // Assign color data if available, otherwise default to neutral gray.
             if (has_color) {
                 cv::Vec3b c = color_img.at<cv::Vec3b>(y, x);
                 cloud.colors.emplace_back(c[2], c[1], c[0], 255);  // BGR→RGBA
