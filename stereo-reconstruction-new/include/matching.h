@@ -15,10 +15,10 @@ struct MatchParams {
     MatchMethod method         = MatchMethod::MANUAL_SGM;
     int         window_size    = 5;
     int         num_disparities= 64;
-    int         min_disparity  = 0;
+    int         min_disparity  = 80;   // DTU scan1: object ~550mm, f=720,B=61mm → d_min≈80
     bool        subpixel       = true;   // parabola sub-pixel refinement
     bool        lr_check       = true;   // left-right consistency check
-    bool        median_filter  = true;   // post-processing median filter
+    bool        median_filter  = false;  // post-processing median filter (off: cleaner cloud, higher precision)
     // SGM penalties
     int P1 = 10;
     int P2 = 120;
