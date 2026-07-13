@@ -18,16 +18,17 @@ class Ransac {
     
     static constexpr unsigned int RNG_SEED = 42;  // For reproducibility
 
-    // TODO: add confidence attribute
-
-    Eigen::Matrix3d estimateFundamentalMatrix(const std::vector<Eigen::Vector3d>& pts_left, const std::vector<Eigen::Vector3d>& pts_right);
+    static Eigen::Matrix3d estimateFundamentalMatrix(const std::vector<Eigen::Vector3d>& pts_left, const std::vector<Eigen::Vector3d>& pts_right);
 
     // ─────────────────────────────────────────────────────────────────────────────
     // Sampson distance (first-order geometric error)
     //   d = sqrt( (x2^T F x1)^2 / ( (Fx1)[0]^2 + (Fx1)[1]^2 + (F^T x2)[0]^2 + (F^T x2)[1]^2 ) )
     //   sqrt is applied so the result is in pixels (same units as the RANSAC threshold)
     // ─────────────────────────────────────────────────────────────────────────────
-    double sampsonDistance(const Eigen::Vector3d& pt_left, const Eigen::Vector3d& pt_right, const Eigen::Matrix3d& F);
+    static double sampsonDistance(const Eigen::Vector3d& pt_left, const Eigen::Vector3d& pt_right, const Eigen::Matrix3d& F);
+
+    // Rescales points for a better-conditioned 8-point solve (Hartley Normalization)
+    static Eigen::Matrix3d doHartleyNormalization(const std::vector<Eigen::Vector3d>& pts, std::vector<Eigen::Vector3d>& normalized_pts);
 
 
 public:
