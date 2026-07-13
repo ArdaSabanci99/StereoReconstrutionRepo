@@ -157,7 +157,7 @@ static cv::Mat buildQ(const cv::Mat& K, double baseline) {
     double f  = K.at<double>(0,0);
     double cx = K.at<double>(0,2);
     double cy = K.at<double>(1,2);
-    double Tx = baseline;   // negative (right camera is to the right)
+    double Tx = baseline;   // caller passes baseline already negated (-B); right camera is to the right
     cv::Mat Q = (cv::Mat_<double>(4,4)
         <<  1,  0,  0,        -cx,
             0,  1,  0,        -cy,
@@ -179,8 +179,8 @@ RectifyResult rectifyManual(const cv::Mat& left, const cv::Mat& right,
     // ── 1. Compute epipoles ──────────────────────────────────────────────
     //   e1: null(F^T) → F e1 = 0   (left  epipole, seen from left  image)
     //   e2: null(F)   → F^T e2 = 0 (right epipole, seen from right image)
-    cv::Mat e1 = computeEpipole(F.t());   // F  * e1 = 0
-    cv::Mat e2 = computeEpipole(F);       // F^T* e2 = 0
+    cv::Mat e1 = computeEpipole(calib.F.t());   // F  * e1 = 0
+    cv::Mat e2 = computeEpipole(calib.F);       // F^T* e2 = 0
 
     std::cout << "[rectify] e1 = " << e1.t() << "\n"
               << "[rectify] e2 = " << e2.t() << "\n";
