@@ -13,7 +13,7 @@ struct CalibData {
     cv::Mat R_rel;           // R1 * R0^T
     cv::Mat t_rel;           // metric translation (sparse.t * baseline), not a unit vector
 
-    cv::Mat F;               // 3×3 fundamental matrix (set by sparse matching, used by rectifyManual)
+    cv::Mat F;               // 3×3 fundamental matrix (set by sparse matching, used by rectifyLoopZhang)
 
     double baseline = 0.0;   // |camera centres| in mm
     bool   swapped  = false; // true if L/R were swapped during sparse matching to enforce t[0]>0
@@ -41,7 +41,7 @@ void saveCalibData(const CalibData& calib, const std::string& path);
 CalibData loadCalibData(const std::string& path);
 
 // ── Inlier correspondences serialisation ────────────────────────────────────
-// Saves/loads the RANSAC inlier point pairs produced by sparse matching, required by rectifyManual
+// Saves/loads the RANSAC inlier point pairs produced by sparse matching, required by rectifyLoopZhang
 void saveInlierPoints(const std::vector<cv::Point2f>& left,
                       const std::vector<cv::Point2f>& right,
                       const std::string& path);

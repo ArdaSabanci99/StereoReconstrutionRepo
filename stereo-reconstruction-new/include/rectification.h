@@ -12,13 +12,14 @@ struct RectifyResult {
     cv::Mat P1, P2;      // rectified projection matrices
 };
 
-// Manual Loop-Zhang rectification using F and K from calib.
-// in_l / in_r are the RANSAC inlier correspondences from sparse matching,
-// used to fit the affine component of H1 that minimises vertical disparity.
-RectifyResult rectifyManual(const cv::Mat& left, const cv::Mat& right,
-                              const CalibData& calib,
-                              const std::vector<cv::Point2f>& in_l,
-                              const std::vector<cv::Point2f>& in_r);
+
+// Loop-Zhang Rectification
+// Uses pure uncalibrated geometry. F is estimated from sparse matching.
+// cv_pts_l and cv_pts_r must be the filtered, verified INLIER matched points.
+RectifyResult rectifyLoopZhang(const cv::Mat& left, const cv::Mat& right,
+    const cv::Mat& F_cv,
+    const std::vector<cv::Point2f>& cv_pts_l,
+    const std::vector<cv::Point2f>& cv_pts_r);
 
 // OpenCV baseline (for comparison / fallback)
 RectifyResult rectifyOpenCV(const cv::Mat& left, const cv::Mat& right,

@@ -1,0 +1,6 @@
+@inproceedings{Jensen14a,
+    title = {Large Scale Multi-view Stereopsis Evaluation},
+    author = {Jensen, R. and Dahl, A. and Vogiatzis, G. and Tola, E. and Aan\ae s H.},
+    booktitle = {CVPR'14},
+    year = {2014},
+}

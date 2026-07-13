@@ -177,7 +177,8 @@ int main(int argc, char** argv) {
     // ── 3. Rectification ─────────────────────────────────────────────────
     std::cout << "\n=== Rectification (" << (manual_rect ? "Loop-Zhang" : "OpenCV") << ") ===\n";
     RectifyResult rect;
-    rect = manual_rect ? rectifyManual(imgL, imgR, calib, rect_in_l, rect_in_r)
+
+    rect = manual_rect ? rectifyLoopZhang(imgL, imgR, calib.F, rect_in_l, rect_in_r)
                        : rectifyOpenCV(imgL, imgR, calib);
 
     std::string rect_path = "results/scene" + sceneId + "/rectification";
