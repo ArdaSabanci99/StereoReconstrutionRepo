@@ -2,6 +2,7 @@
 #include "DataLoader.h"
 #include "Eigen.h"
 #include "Ransac.h"
+#include "KeypointDetector.h"
 #include <opencv2/core/eigen.hpp>
 #include <iostream>
 #include <fstream>
@@ -10,15 +11,13 @@
 #include <random>
 #include <numeric>
 #include <cmath>
+#include <limits>
+#include <chrono>
 
 namespace fs = std::filesystem;
 constexpr double detTolerance = 1e-6;
 
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sampson distance (first-order geometric error)
-//   d = sqrt( (x2^T F x1)^2 / ( (Fx1)[0]^2 + (Fx1)[1]^2 + (F^T x2)[0]^2 + (F^T x2)[1]^2 ) )
-//   sqrt is applied so the result is in pixels (same units as the RANSAC threshold)
 // ─────────────────────────────────────────────────────────────────────────────
 double sampsonDistance(const cv::Point2f & pt_left, const cv::Point2f & pt_right, const cv::Mat & F) {
     cv::Mat x_left = (cv::Mat_<double>(3,1) << pt_left.x, pt_left.y, 1.0);
@@ -33,7 +32,7 @@ double sampsonDistance(const cv::Point2f & pt_left, const cv::Point2f & pt_right
                  + l_left.at<double>(1)*l_left.at<double>(1);
     return std::sqrt((num * num) / (den + 1e-10));
 }
-
+// ─────────────────────────────────────────────────────────────────────────────
 std::vector<Eigen::Vector3d> normalizePoints(const std::vector<Eigen::Vector3d>& pts, const Eigen::Matrix3d & K) {
     Eigen::Matrix3d K_inv = K.inverse();
     std::vector<Eigen::Vector3d> pts_norm;
@@ -44,7 +43,7 @@ std::vector<Eigen::Vector3d> normalizePoints(const std::vector<Eigen::Vector3d>&
 
     return pts_norm;
 }
-
+// ─────────────────────────────────────────────────────────────────────────────
 Eigen::Vector3d triangulatePoint(const Eigen::Vector3d & pt_left_norm, const Eigen::Vector3d & pt_right_norm,  const Eigen::Matrix<double, 3, 4> & P_left, const Eigen::Matrix<double, 3, 4> & P_right) {
     Eigen::Matrix4d A;
 
@@ -66,7 +65,7 @@ Eigen::Vector3d triangulatePoint(const Eigen::Vector3d & pt_left_norm, const Eig
     // normalizing by scale factor
     return X_hom.head<3>() / X_hom(3);
 }
-
+// ─────────────────────────────────────────────────────────────────────────────
 size_t recoverPose(const std::vector<Eigen::Vector3d>& pts_left_norm, const std::vector<Eigen::Vector3d>& pts_right_norm, 
                     const Eigen::Matrix3d& E,
                     Eigen::Matrix3d & R, Eigen::Vector3d & t,
@@ -161,20 +160,36 @@ size_t recoverPose(const std::vector<Eigen::Vector3d>& pts_left_norm, const std:
     return best_inlier_count;
 
 }
-
-
-SparseMatchResult computeSparseMatches(cv::Mat& imgLeft, cv::Mat& imgRight, CalibData & calib, bool run_opencv, const SparseMatchParams& params) {
+// ─────────────────────────────────────────────────────────────────────────────
+SparseMatchResult computeSparseMatches(cv::Mat& imgLeft, cv::Mat& imgRight, CalibData & calib,
+                                        SiftBackend siftBackend, FMatrixBackend fmatrixBackend,
+                                        const SparseMatchParams& params) {
     SparseMatchResult result;
     try {
-        result = run_opencv ? computeSparseMatchesOpenCV(imgLeft, imgRight, calib, params) : computeSparseMatchesCustom(imgLeft, imgRight, calib, params);
+        // Detect the keypoints once, then hand them to the requested estimator.
+        // Timed separately so callers can tell detection/description apart from
+        // F/E/pose estimation when comparing backends (each is an independently
+        // swappable stage).
+        auto sift_start = std::chrono::steady_clock::now();
+        result = detectSiftMatches(imgLeft, imgRight, params, siftBackend);
+        double sift_time_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - sift_start).count();
+
+        auto fmatrix_start = std::chrono::steady_clock::now();
+        result = (fmatrixBackend == FMatrixBackend::OpenCVFundamental)
+            ? computeSparseMatchesOpenCV(result, calib, params)
+            : computeSparseMatchesCustom(result, calib, params);
+        double fmatrix_time_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - fmatrix_start).count();
+
+        result.sift_time_ms    = sift_time_ms;
+        result.fmatrix_time_ms = fmatrix_time_ms;
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("[sparse matching] Sparse matching failed: ") + e.what());
     }
 
     if (result.R.empty()) {
-        throw std::runtime_error(std::string("[sparse matching] Pose recovery failed. Sparse matching (")
-            + (run_opencv ? "OpenCV" : "manual implementation")
-            + ") produces empty R.\n");
+        throw std::runtime_error("[sparse matching] Pose recovery failed: produced empty R.\n");
     }
 
     calib.R_rel = result.R;
@@ -188,57 +203,27 @@ SparseMatchResult computeSparseMatches(cv::Mat& imgLeft, cv::Mat& imgRight, Cali
     std::cout << "[sparse_matching] Mean Sampson error (inliers): " << result.mean_epipolar_error << " px\n";
     std::cout << "[sparse_matching] Pose cheirality inliers: " << result.n_pose_inliers
               << " / RANSAC inliers: " << result.n_inliers << "\n";
-
-    std::cout << "[sparse matching]: Sparse matching (" << (run_opencv ? "OpenCV" : "Manual") << ") finished." << std::endl;
+    std::cout << "[sparse_matching] Sparse matching finished (SIFT="
+              << (siftBackend == SiftBackend::Custom ? "custom" : "OpenCV")
+              << ", estimator=" << (fmatrixBackend == FMatrixBackend::CustomRansac ? "custom RANSAC" : "OpenCV") << ").\n";
 
     return result;
 };
 
-
-SparseMatchResult computeSparseMatchesOpenCV(const cv::Mat& imgLeft, const cv::Mat& imgRight, const CalibData& calib, const SparseMatchParams& params) {
-    SparseMatchResult result;
-
-    // Convert to grayscale for SIFT
-    cv::Mat grayL, grayR;
-    cv::cvtColor(imgLeft,  grayL, cv::COLOR_BGR2GRAY);
-    cv::cvtColor(imgRight, grayR, cv::COLOR_BGR2GRAY);
-
-    // 1. Keypoint Detection using SIFT
-        // TODO: Add multiple descriptors (e.g. ORB)
-    auto sift = cv::SIFT::create(params.sift_features, params.sift_octave_layers,
-                                  params.sift_contrast_thresh, params.sift_edge_thresh,
-                                  params.sift_sigma);
-
-    std::vector<cv::KeyPoint> kpL, kpR;
-    cv::Mat descL, descR;
-    sift->detectAndCompute(grayL, cv::noArray(), kpL, descL);
-    sift->detectAndCompute(grayR, cv::noArray(), kpR, descR);
-
-    // 2. Match descriptors using BFMatches
-    cv::BFMatcher matcher(cv::NORM_L2);
-    std::vector<std::vector<cv::DMatch>> knn;
-    matcher.knnMatch(descL, descR, knn, 2);
-
-    // 3. Find good matches using Lowe's ratio test
-    std::vector<float> matchDist;
-
-    for (auto& m : knn) {
-        if (m.size() >= 2 && m[0].distance < params.ratio_threshold * m[1].distance) {
-            result.pts_left.push_back(kpL[m[0].queryIdx].pt);
-            result.pts_right.push_back(kpR[m[0].trainIdx].pt);
-            matchDist.push_back(m[0].distance);  // For substep
-        }
-    }
-    result.n_matches = (int)result.pts_left.size();
-
-
-    // 4. Estimate fundamental matrix with RANSAC.
-
+// Backward-compatible overload: maps the old opencv_sm bool onto the two new axes.
+SparseMatchResult computeSparseMatches(cv::Mat& imgLeft, cv::Mat& imgRight, CalibData & calib, bool run_opencv, const SparseMatchParams& params) {
+    SiftBackend siftBackend = (!run_opencv && params.use_custom_sift) ? SiftBackend::Custom : SiftBackend::OpenCV;
+    FMatrixBackend fmatrixBackend = run_opencv ? FMatrixBackend::OpenCVFundamental : FMatrixBackend::CustomRansac;
+    return computeSparseMatches(imgLeft, imgRight, calib, siftBackend, fmatrixBackend, params);
+};
+// ─────────────────────────────────────────────────────────────────────────────
+SparseMatchResult computeSparseMatchesOpenCV(SparseMatchResult result, const CalibData& calib, const SparseMatchParams& params) {
+    // Estimate fundamental matrix with RANSAC.
     if (result.pts_left.size() < 8) {
         throw std::runtime_error(std::string("[sparse matching] Not enough points (<8) to run 8-point algorithm."));
     }
     result.F = cv::findFundamentalMat(result.pts_left, result.pts_right,
-                                      cv::FM_RANSAC, params.ransac_threshold, 0.999, result.inlier_mask);
+                                      cv::USAC_FM_8PTS, params.ransac_threshold, 0.999, result.inlier_mask);
 
     if (result.F.empty()) {
         throw std::runtime_error(std::string("[sparse matching] RANSAC failed to find a valid model."));
@@ -284,45 +269,117 @@ SparseMatchResult computeSparseMatchesOpenCV(const cv::Mat& imgLeft, const cv::M
 
     return result;
 };
+// ─────────────────────────────────────────────────────────────────────────────
+// Call custom SIFT Implementation
+    // Handle conversion between OpenCV and Eigen types
+static void detectCustomSift(const cv::Mat & gray, std::vector<cv::KeyPoint> & keypoints, cv::Mat & descriptors,
+                              const SparseMatchParams & params) {
+    cv::Mat gray_f;
+    gray.convertTo(gray_f, CV_32F);
+    Eigen::MatrixXf img_eigen;
+    cv::cv2eigen(gray_f, img_eigen);
 
-SparseMatchResult computeSparseMatchesCustom(const cv::Mat & imgLeft, const cv::Mat & imgRight, const CalibData & calib, const SparseMatchParams & params) {
+    SIFT sift(params.sift_octave_layers, params.sift_sigma, params.sift_features,
+              params.sift_contrast_thresh, params.sift_edge_thresh);
+    std::vector<Keypoint> kps = sift.detect_features(img_eigen);
+
+    keypoints.clear();
+    keypoints.reserve(kps.size());
+    descriptors.create(static_cast<int>(kps.size()), 128, CV_32F);
+
+    for (size_t i = 0; i < kps.size(); ++i) {
+        const Keypoint & kp = kps[i];
+        keypoints.emplace_back(kp.y, kp.x, static_cast<float>(kp.sigma), kp.orientation_deg);
+        for (int d = 0; d < 128; ++d)
+            descriptors.at<float>(static_cast<int>(i), d) = kp.descriptor[d];
+    }
+}
+
+static void brute_force_match(const cv::Mat & desc_left, const cv::Mat & desc_right,
+                               const std::vector<cv::KeyPoint> & kp_left, const std::vector<cv::KeyPoint> & kp_right,
+                               const SparseMatchParams & params, SparseMatchResult & result) {
+    for (int i = 0; i < desc_left.rows; ++i) {
+        const float * query_desc = desc_left.ptr<float>(i);
+
+        float best_dist_sq = std::numeric_limits<float>::max();
+        float second_best_dist_sq = std::numeric_limits<float>::max();
+        int best_idx = -1;
+
+        // Scan every candidate in the right image
+            // Tracking the best and second-best match
+        for (int j = 0; j < desc_right.rows; ++j) {
+            const float * candidate_desc = desc_right.ptr<float>(j);
+
+            float dist_sq = 0.0f;
+            for (int d = 0; d < desc_left.cols; ++d) {
+                float diff = query_desc[d] - candidate_desc[d];
+                dist_sq += diff * diff;
+            }
+
+            if (dist_sq < best_dist_sq) {
+                second_best_dist_sq = best_dist_sq;
+                best_dist_sq = dist_sq;
+                best_idx = j;
+            } else if (dist_sq < second_best_dist_sq) {
+                second_best_dist_sq = dist_sq;
+            }
+        }
+
+        // Lowe's ratio test
+            // Accept if difference between first and second best candidate is big enough
+        bool has_two_candidates = best_idx >= 0 && second_best_dist_sq < std::numeric_limits<float>::max();
+        if (has_two_candidates && best_dist_sq < (params.ratio_threshold * params.ratio_threshold) * second_best_dist_sq) {
+            result.pts_left.push_back(kp_left[i].pt);
+            result.pts_right.push_back(kp_right[best_idx].pt);
+        }
+    }
+}
+
+// Interface to keypoint detection: runs the SIFT backend (OpenCV, Custom)
+SparseMatchResult detectSiftMatches(const cv::Mat & imgLeft, const cv::Mat & imgRight,
+                                     const SparseMatchParams & params, SiftBackend siftBackend) {
     SparseMatchResult result;
 
-    // Convert to grayscale for SIFT
     cv::Mat grayL, grayR;
     cv::cvtColor(imgLeft,  grayL, cv::COLOR_BGR2GRAY);
     cv::cvtColor(imgRight, grayR, cv::COLOR_BGR2GRAY);
 
-    // 1. Keypoint Detection using SIFT
-        // TODO: implement manual SIFT
-    auto sift = cv::SIFT::create(params.sift_features, params.sift_octave_layers,
-                                  params.sift_contrast_thresh, params.sift_edge_thresh,
-                                  params.sift_sigma);
-
     std::vector<cv::KeyPoint> kpL, kpR;
     cv::Mat descL, descR;
-    sift->detectAndCompute(grayL, cv::noArray(), kpL, descL);
-    sift->detectAndCompute(grayR, cv::noArray(), kpR, descR);
 
-    // 2. Match descriptors using BFMatches
-    cv::BFMatcher matcher(cv::NORM_L2);
-    std::vector<std::vector<cv::DMatch>> knn;
-    matcher.knnMatch(descL, descR, knn, 2);
+    if (siftBackend == SiftBackend::Custom) {  // Custom SIFT Implementation
+        detectCustomSift(grayL, kpL, descL, params);
+        detectCustomSift(grayR, kpR, descR, params);
+        std::cout << "[sparse_matching] Custom SIFT keypoints: left=" << kpL.size()
+                  << " right=" << kpR.size() << "\n";
 
-    // 3. Find good matches using Lowe's ratio test
-    std::vector<float> matchDist;
+        // Custom matcher: brute-force nearest-neighbour search + ratio test.
+        brute_force_match(descL, descR, kpL, kpR, params, result);
+    } else {  // OpenCV SIFT Implementation
+        auto sift = cv::SIFT::create(params.sift_features, params.sift_octave_layers,
+                                      params.sift_contrast_thresh, params.sift_edge_thresh,
+                                      params.sift_sigma);
+        sift->detectAndCompute(grayL, cv::noArray(), kpL, descL);
+        sift->detectAndCompute(grayR, cv::noArray(), kpR, descR);
 
-    for (auto & m : knn) {
-        if (m.size() >= 2 && m[0].distance < params.ratio_threshold * m[1].distance) {
-            result.pts_left.push_back(kpL[m[0].queryIdx].pt);
-            result.pts_right.push_back(kpR[m[0].trainIdx].pt);
-            matchDist.push_back(m[0].distance);  // For substep
+        cv::BFMatcher matcher(cv::NORM_L2);
+        std::vector<std::vector<cv::DMatch>> knn;
+        matcher.knnMatch(descL, descR, knn, 2);
+
+        for (auto & m : knn) {
+            if (m.size() >= 2 && m[0].distance < params.ratio_threshold * m[1].distance) {
+                result.pts_left.push_back(kpL[m[0].queryIdx].pt);
+                result.pts_right.push_back(kpR[m[0].trainIdx].pt);
+            }
         }
     }
     result.n_matches = (int)result.pts_left.size();
 
+    return result;
+}
 
-    // 4. Estimate fundamental matrix with RANSAC.
+SparseMatchResult computeSparseMatchesCustom(SparseMatchResult result, const CalibData & calib, const SparseMatchParams & params) {
+    // Estimate fundamental matrix with custom RANSAC + 8-point AG
     Ransac ransac(params.custom_ransac_iters, params.ransac_threshold, 8);
 
     std::vector<Eigen::Vector3d> eigen_pts_left, eigen_pts_right;
@@ -391,16 +448,9 @@ void saveMatchVisualization(const cv::Mat& imgLeft, const cv::Mat& imgRight,
                              const std::string& runName,
                              const std::string& viewL,
                              const std::string& viewR,
-                             double rotErrDeg,
-                             double transErrDeg,
                              bool inliersOnly) {
     fs::create_directories(saveDir);
 
-    const std::string imgPath = saveDir + "/matches_" + runName + "_"
-                                + viewL + "_" + viewR + ".png";
-
-    // ── Visualization ────────────────────────────────────────────────────────
-    // Collect the point pairs to draw, respecting inlier filter and cap.
     std::vector<cv::Point2f> drawL, drawR;
     for (size_t i = 0; i < result.pts_left.size(); ++i) {
         if (inliersOnly && !result.inlier_mask.empty() && !result.inlier_mask[i]) continue;
@@ -409,63 +459,25 @@ void saveMatchVisualization(const cv::Mat& imgLeft, const cv::Mat& imgRight,
     }
     if (drawL.empty()) {
         std::cout << "[sparse_matching] No matches to visualize.\n";
-    } else {
-        // Draw manually for thickness control: images side-by-side, circles + connecting lines.
-        cv::Mat vis;
-        cv::hconcat(imgLeft, imgRight, vis);
-        const int offset = imgLeft.cols;
-        cv::RNG rng(0);
-        for (size_t i = 0; i < drawL.size(); ++i) {
-            cv::Scalar color(rng.uniform(0,256), rng.uniform(0,256), rng.uniform(0,256));
-            cv::Point2f ptR(drawR[i].x + offset, drawR[i].y);
-            cv::circle(vis, drawL[i], 4, color, 2);
-            cv::circle(vis, ptR,      4, color, 2);
-            cv::line(vis, drawL[i], ptR, color, 1);
-        }
-        cv::imwrite(imgPath, vis);
-        std::cout << "[sparse_matching] Match visualisation saved to " << imgPath << "\n";
+        return;
     }
 
-    // ── CSV log ──────────────────────────────────────────────────────────────
-    const std::string logPath  = saveDir + "/results_log.csv";
-    const bool        logExists = fs::exists(logPath);
-
-    // Skip if this exact (run_name, viewL, viewR) tuple is already recorded,
-    // so a stable baseline is never accidentally overwritten.
-    const std::string key = runName + "," + viewL + "," + viewR;
-    if (logExists) {
-        std::ifstream fin(logPath);
-        std::string line;
-        while (std::getline(fin, line)) {
-            if (line.rfind(key, 0) == 0) {
-                std::cout << "[sparse_matching] '" << runName << "' already in log; skipping.\n";
-                return;
-            }
-        }
+    cv::Mat vis;
+    cv::hconcat(imgLeft, imgRight, vis);
+    const int offset = imgLeft.cols;
+    cv::RNG rng(0);
+    for (size_t i = 0; i < drawL.size(); ++i) {
+        cv::Scalar color(rng.uniform(0, 256), rng.uniform(0, 256), rng.uniform(0, 256));
+        cv::Point2f ptR(drawR[i].x + offset, drawR[i].y);
+        cv::circle(vis, drawL[i], 4, color, 2);
+        cv::circle(vis, ptR,      4, color, 2);
+        cv::line(vis, drawL[i], ptR, color, 1);
     }
 
-    std::ofstream fout(logPath, std::ios::app);
-    if (!logExists)
-        fout << "run_name,view_L,view_R,inliers_only,max_matches,"
-                "n_matches,n_inliers,n_pose_inliers,mean_epipolar_error_px,"
-                "rot_err_deg,trans_err_deg\n";
-
-    fout << key << ","
-         << (inliersOnly ? 1 : 0) << ","
-         << result.n_matches << ","
-         << result.n_inliers << ","
-         << result.n_pose_inliers << ","
-         << std::fixed << std::setprecision(4) << result.mean_epipolar_error << ",";
-    if (rotErrDeg >= 0.0)
-        fout << std::fixed << std::setprecision(4) << rotErrDeg << ","
-             << std::fixed << std::setprecision(4) << transErrDeg << "\n";
-    else
-        fout << "N/A,N/A\n";
-
-    std::cout << "[sparse_matching] Results logged to " << logPath << "\n";
+    const std::string imgPath = saveDir + "/matches_" + runName + "_" + viewL + "_" + viewR + ".png";
+    cv::imwrite(imgPath, vis);
+    std::cout << "[sparse_matching] Match visualisation saved to " << imgPath << "\n";
 }
-
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Standalone executable
@@ -476,6 +488,8 @@ int main(int argc, char** argv) {
         std::cerr
             << "Usage: sparse_matching <data_path> <scene_id> <left_id> <right_id> [options]\n"
             << "  --opencv               (use OpenCV sparse matching; default: manual)\n"
+            << "  --custom-sift          (manual pipeline only: use our own SIFT detector\n"
+            << "                          instead of cv::SIFT for keypoint detection)\n"
             << "  --features  <N>        SIFT max keypoints, 0=unlimited (default: 0)\n"
             << "  --octaves   <N>        SIFT octave layers (default: 3)\n"
             << "  --contrast  <F>        SIFT contrast threshold (default: 0.04)\n"
@@ -497,6 +511,7 @@ int main(int argc, char** argv) {
     for (int i = 5; i < argc; ++i) {
         std::string a(argv[i]);
         if (a == "--opencv")                   run_opencv                 = true;
+        else if (a == "--custom-sift")          smParams.use_custom_sift   = true;
         else if (a == "--features"  && i+1 < argc) smParams.sift_features     = std::stoi(argv[++i]);
         else if (a == "--octaves"   && i+1 < argc) smParams.sift_octave_layers= std::stoi(argv[++i]);
         else if (a == "--contrast"  && i+1 < argc) smParams.sift_contrast_thresh = std::stod(argv[++i]);
@@ -519,6 +534,12 @@ int main(int argc, char** argv) {
     }
 
     SparseMatchResult result = computeSparseMatches(imgL, imgR, calib, run_opencv, smParams);
+
+    // Keep images and correspondences paired with calib's (possibly swapped) L/R labeling.
+    if (calib.swapped) {
+        std::swap(imgL, imgR);
+        std::swap(result.pts_left, result.pts_right);
+    }
 
     std::string savePath = "results/scene" + sceneId + "/sparse_matching";
     fs::create_directories(savePath);
