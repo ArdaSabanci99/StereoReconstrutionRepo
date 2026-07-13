@@ -83,18 +83,57 @@ set(COMMON_SRC
     src/utils.cpp
 )
 
-# ── 1. Sparse matching ───────────────────────────────────────────────────────
-add_stereo_exe(sparse_matching
+add_library(sparse_matching_lib STATIC
     ${COMMON_SRC}
+    src/Ransac.cpp
+    src/KeypointDetector.cpp
+    src/GaussianBlur.cpp
+)
+
+# ── 1. Sparse matching ───────────────────────────────────────────────────────
+add_stereo_exe(sparse_matching src/sparse_matching.cpp)
+target_link_libraries(sparse_matching sparse_matching_lib)
+
+# ── 1b. Sparse matching test/experiment runner (pose error vs. DTU GT) ──────
+add_stereo_exe(test_sparse_matching
+    tests/test_sparse_matching.cpp
+    tests/eval_common.cpp
     src/sparse_matching.cpp
 )
+target_link_libraries(test_sparse_matching sparse_matching_lib)
+target_compile_definitions(test_sparse_matching PRIVATE PIPELINE_BUILD)
+
+# ── 1c. Eight-point vs. real DTU ground truth (Track B) ─────────────────────
+add_stereo_exe(test_eightpoint_ground_truth
+    tests/test_eightpoint_ground_truth.cpp
+    tests/eval_common.cpp
+    src/sparse_matching.cpp
+)
+target_link_libraries(test_eightpoint_ground_truth sparse_matching_lib)
+target_compile_definitions(test_eightpoint_ground_truth PRIVATE PIPELINE_BUILD)
+
+# ── 1d. SIFT-only agreement, custom vs. OpenCV (Track A) ────────────────────
+add_stereo_exe(test_sift_agreement
+    tests/test_sift_agreement.cpp
+    tests/eval_common.cpp
+)
+target_link_libraries(test_sift_agreement sparse_matching_lib)
+
+# ── 1e. SIFT vs. known homography, custom vs. OpenCV (Track B, guide 1.3) ───
+add_stereo_exe(test_sift_homography_gt
+    tests/test_sift_homography_gt.cpp
+    tests/eval_common.cpp
+    src/sparse_matching.cpp
+)
+target_link_libraries(test_sift_homography_gt sparse_matching_lib)
+target_compile_definitions(test_sift_homography_gt PRIVATE PIPELINE_BUILD)
 
 # ── 2. Rectification ────────────────────────────────────────────────────────
 add_stereo_exe(rectification
-    ${COMMON_SRC}
     src/sparse_matching.cpp
     src/rectification.cpp
 )
+target_link_libraries(rectification sparse_matching_lib)
 target_compile_definitions(rectification PRIVATE BUILDING_RECTIFICATION)
 
 # ── 3. Dense matching ────────────────────────────────────────────────────────
@@ -126,7 +165,6 @@ add_stereo_exe(dtu_eval
 
 # ── 6. Full pipeline ─────────────────────────────────────────────────────────
 add_stereo_exe(pipeline
-    ${COMMON_SRC}
     src/sparse_matching.cpp
     src/rectification.cpp
     src/matching.cpp
@@ -135,6 +173,7 @@ add_stereo_exe(pipeline
     src/dtu_eval.cpp
     src/pipeline.cpp
 )
+target_link_libraries(pipeline sparse_matching_lib)
 # PIPELINE_BUILD suppresses matching.cpp's main; SUPPRESS_EVAL_MAIN suppresses
 # evaluation.cpp's main — pipeline.cpp provides the only main for this target.
 target_compile_definitions(pipeline PRIVATE PIPELINE_BUILD SUPPRESS_EVAL_MAIN)
