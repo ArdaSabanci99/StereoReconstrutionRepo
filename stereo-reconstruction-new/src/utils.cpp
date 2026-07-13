@@ -98,10 +98,8 @@ void CalibData::verifyLeftRightCameraOrder() {
         R_rel = R_rel.t();
         t_rel = -R_rel * t_rel;
 
-        if (!hasFundamentalMatrix()) {
-            throw std::runtime_error("[verify L/R] Cannot swap left/right cameras: missing fundamental matrix F.");
-        }
-        F = F.t();
+        if (hasFundamentalMatrix())
+            F = F.t();
     
         swapped = !swapped;
     }

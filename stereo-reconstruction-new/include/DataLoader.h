@@ -25,6 +25,4 @@ public:
                             const std::string& viewLeftId,
                             const std::string& viewRightId);
 
-};  // TODO: resolve issues with loading extrinsics data
-        // RectifyOpenCV: one that uses the extrinsics (load correct), second that doesn't but does the rectification still with opencv without it
-        // Check: LeftExtrinsics are loaded at correct times
+};

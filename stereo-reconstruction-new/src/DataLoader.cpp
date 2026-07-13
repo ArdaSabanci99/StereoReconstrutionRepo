@@ -64,11 +64,15 @@ CalibData DTUDataLoader::loadCalibIntrinsics(const std::string & viewLeftId, con
     auto [K0, R0, t0] = decomposeProjectionMatrix(viewLeftId);
     auto [K1, R1, t1] = decomposeProjectionMatrix(viewRightId);
 
-    // TODO: Fix if the recovered R0, R1 are not proper rotation matrices (det(R) != 1)
-    assert(std::abs(cv::determinant(R0) - 1.0) < detTolerance);
-    assert(std::abs(cv::determinant(R1) - 1.0) < detTolerance);
+    if (std::abs(cv::determinant(R0) - 1.0) >= detTolerance)
+        throw std::runtime_error("[calib] Left camera rotation recovered from " + viewLeftId
+            + "'s projection matrix is not a proper rotation matrix (det != 1).");
+    if (std::abs(cv::determinant(R1) - 1.0) >= detTolerance)
+        throw std::runtime_error("[calib] Right camera rotation recovered from " + viewRightId
+            + "'s projection matrix is not a proper rotation matrix (det != 1).");
 
-    // intrinsics should be same (same camera), but not same
+    // K0/K1 are physically the same camera, but each is recovered independently via RQ
+        // Decomposition of its own view's projection matrix, so expect small numerical differences
     printMatInfo("Intrinsics Left", K0);
     std::cout << K0 << std::endl;
     printMatInfo("Intrinsics Right", K1);

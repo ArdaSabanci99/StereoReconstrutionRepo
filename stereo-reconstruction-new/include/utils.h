@@ -10,7 +10,6 @@ struct CalibData {
     cv::Mat K0, K1;          // 3×3 intrinsic matrices
     cv::Mat R0, t0;          // left camera absolute pose (world → camera), used for ICP world-frame alignment only
     // Relative pose: right camera relative to left
-                            // TODO: HOw to do with swapping? Loading once we need it for ICP?
     cv::Mat R_rel;           // R1 * R0^T
     cv::Mat t_rel;           // metric translation (sparse.t * baseline), not a unit vector
 
