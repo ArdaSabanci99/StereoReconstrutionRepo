@@ -25,20 +25,18 @@ static void printUsage(const char* name) {
         << "Pipeline:\n"
         << "  --manual-rect                                  (Loop-Zhang rectification)\n"
         << "  --scale     <factor>                           (default: 0.5)\n"
-        << "  --gt        <path_to.pfm>                      (evaluate if given)\n"
-        << "  --test_gt_pose                                         (skip sparse matching, use DTU GT pose)\n"
+        << "  --test-gt-pose                                 (skip sparse matching, use DTU GT pose)\n"
         << "Sparse matching:\n"
-        << "  --opencv_sm                                    (use OpenCV sparse matching; default: manual)\n"
+        << "  --sm-opencv                                    (use OpenCV sparse matching; default: manual)\n"
+        << "  --sm-custom-sift                                (manual pipeline only: use our own SIFT\n"
+        << "                                                    detector instead of cv::SIFT)\n"
         << "  --sm-features  <N>   SIFT max keypoints, 0=unlimited (default: 0)\n"
-        << "  --sm-octaves   <N>   SIFT octave layers (default: 3)\n"
-        << "  --sm-contrast  <F>   SIFT contrast threshold (default: 0.04)\n"
-        << "  --sm-edge      <F>   SIFT edge threshold (default: 10.0)\n"
-        << "  --sm-sigma     <F>   SIFT Gaussian sigma (default: 1.6)\n"
-        << "  --sm-ratio     <F>   Lowe ratio test_gt_pose threshold (default: 0.75)\n"
+        << "  --sm-ratio     <F>   Lowe ratio test threshold (default: 0.75)\n"
         << "  --sm-ransac    <F>   RANSAC Sampson distance threshold px (default: 1.0)\n"
-        << "  --sm-chirality <F>   recoverPose max depth (default: 25.0)\n"
+        << "                       (other SIFT/RANSAC tuning knobs live in the sparse_matching /\n"
+        << "                        test_sparse_matching executables, not here)\n"
         << "Evaluation:\n"
-        << "  --gt        <path_to.pfm>                      (disparity eval, Middlebury)\n"  //TODO: Check whether it is being used in current setup
+        << "  --gt        <path_to.pfm>                      (disparity eval, Middlebury)\n"
         << "  --eval-ply  <reference.ply>                  (DTU point-cloud eval)\n";
 }
 
@@ -83,16 +81,12 @@ int main(int argc, char** argv) {
         else if (a == "--window"       && i+1 < argc) mp.window_size               = std::stoi(argv[++i]);
         else if (a == "--ndisp"        && i+1 < argc) mp.num_disparities           = std::stoi(argv[++i]);
         else if (a == "--scale"        && i+1 < argc) scale                        = std::stod(argv[++i]);
-        else if (a == "--opencv_sm")                   opencv_sm                   = true;
-        else if (a == "--test_gt_pose")                        test_gt_pose                     = true;
+        else if (a == "--sm-opencv")                    opencv_sm                   = true;
+        else if (a == "--sm-custom-sift")              smParams.use_custom_sift    = true;
+        else if (a == "--test-gt-pose")                        test_gt_pose                     = true;
         else if (a == "--sm-features"  && i+1 < argc) smParams.sift_features        = std::stoi(argv[++i]);
-        else if (a == "--sm-octaves"   && i+1 < argc) smParams.sift_octave_layers   = std::stoi(argv[++i]);
-        else if (a == "--sm-contrast"  && i+1 < argc) smParams.sift_contrast_thresh = std::stod(argv[++i]);
-        else if (a == "--sm-edge"      && i+1 < argc) smParams.sift_edge_thresh     = std::stod(argv[++i]);
-        else if (a == "--sm-sigma"     && i+1 < argc) smParams.sift_sigma           = std::stod(argv[++i]);
         else if (a == "--sm-ratio"     && i+1 < argc) smParams.ratio_threshold      = std::stof(argv[++i]);
         else if (a == "--sm-ransac"    && i+1 < argc) smParams.ransac_threshold     = std::stod(argv[++i]);
-        else if (a == "--sm-chirality" && i+1 < argc) smParams.chirality_depth      = std::stod(argv[++i]);
 
         else if (a == "--gt"      && i+1 < argc) gt_path            = argv[++i];
         else if (a == "--eval-ply"&& i+1 < argc) eval_ply_path      = argv[++i];
@@ -136,34 +130,16 @@ int main(int argc, char** argv) {
         std::cout << "Images downscaled to " << imgL.cols << "×" << imgL.rows << "\n";
     }
 
-    // TODO: debugging wrapper — remove after validating disparity range
-    {
-        double f = calib.K0.at<double>(0, 0);   // focal length at current scale (px)
-        double B = calib.baseline;               // baseline in mm (from DTU loader)
-
-        // TODO: debugging — verify d_true matches actual scene depth
-        double Z_nominal = 1000.0;
-        double d_true    = f * B / Z_nominal;
-        std::cout << "[DEBUG] f=" << f << " px, B=" << B << " mm, Z_nominal=" << Z_nominal
-                  << " mm  ->  d_true=" << d_true << " px\n";
-
-        double Z_near = 700.0;
-        double Z_far  = max_depth_mm;
-        int d_min = std::max(0, (int)std::floor(f * B / Z_far));
-        int d_max = (int)std::ceil(f * B / Z_near);
-        int nd    = d_max - d_min;
-        nd = ((nd + 15) / 16) * 16;  // BM/SGBM require a multiple of 16
-
-        mp.min_disparity   = d_min;
-        mp.num_disparities = nd;
-
-        std::cout << "[DEBUG] Disparity range: min=" << d_min
-                  << "  num=" << nd
-                  << "  (covers [" << d_min << ", " << d_min + nd << ") px)\n";
-    }
-
     // ── 2. Sparse matching / GT pose ─────────────────────────────────────────────
-    std::cout << "\n=== " << (test_gt_pose ? "Ground-Truth Pose (--test-gt-pose)" : "Sparse Matching") << " ===\n";
+    std::cout << "\n=== Sparse Matching ===\n";
+    if (test_gt_pose) {
+        std::cout << "[sparse matching]: Using GT. Skipping Sparse Matching.\n";
+    } else if (opencv_sm) {
+        std::cout << "[sparse matching]: Running OpenCV pipeline.\n";
+    } else {
+        std::cout << "[sparse matching]: Runnign custom 8-point/RANSAC with "
+                  << (smParams.use_custom_sift ? "manual SIFT" : "OpenCV SIFT") << "\n";
+    }
 
     std::vector<cv::Point2f> rect_in_l, rect_in_r;   // inlier points for Loop-Zhang (empty in GT mode)
 
@@ -174,7 +150,7 @@ int main(int argc, char** argv) {
         (void)K0_gt; (void)K1_gt;
         calib.R_rel = R1_gt * R0_gt.t();
         calib.t_rel = t1_gt - calib.R_rel * t0_gt;   // in mm (DTU world units)
-        std::cout << "[pipeline] GT t_rel norm = " << cv::norm(calib.t_rel) << " mm\n";
+        calib.verifyLeftRightCameraOrder();
     } else {
         SparseMatchResult sparse = computeSparseMatches(imgL, imgR, calib, opencv_sm, smParams);
 
@@ -190,7 +166,13 @@ int main(int argc, char** argv) {
             }
     }
 
-    if (calib.swapped) std::swap(imgL, imgR);
+    // rect_in_l/rect_in_r were collected against the pre-swap imgL/imgR, so they
+    // must be swapped together with the images or the correspondences end up
+    // cross-matched to the wrong (now-relabelled) left/right image.
+    if (calib.swapped) {
+        std::swap(imgL, imgR);
+        std::swap(rect_in_l, rect_in_r);
+    }
 
     // ── 3. Rectification ─────────────────────────────────────────────────
     std::cout << "\n=== Rectification (" << (manual_rect ? "Loop-Zhang" : "OpenCV") << ") ===\n";
