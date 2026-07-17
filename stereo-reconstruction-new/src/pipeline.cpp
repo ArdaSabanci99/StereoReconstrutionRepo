@@ -112,23 +112,9 @@ int main(int argc, char** argv) {
     printMatInfo("Left Image",  imgL);
     printMatInfo("Right Image", imgR);
 
-    // Downscale images and adjust intrinsics consistently.
-    // K is loaded at full calibration resolution. After resize by `scale`:
-    //   f  (K[0,0], K[1,1]) scales linearly with resolution.
-    //   cx (K[0,2]), cy (K[1,2]) shift by half a pixel at each pyramid level
-    //   (the +0.5 / -0.5 accounts for the pixel-centre convention across scales).
-    // TODO: save the scaled K0/K1 back to calib explicitly so later pipeline
-    //   stages (depth, ICP) always read the correct resolution intrinsics.
-    if (scale != 1.0) {
-        cv::resize(imgL, imgL, cv::Size(), scale, scale, cv::INTER_AREA);
-        cv::resize(imgR, imgR, cv::Size(), scale, scale, cv::INTER_AREA);
-        for (cv::Mat* K : {&calib.K0, &calib.K1}) {
-            K->at<double>(0,0) *= scale; K->at<double>(1,1) *= scale;
-            K->at<double>(0,2) = (K->at<double>(0,2)+0.5)*scale - 0.5;
-            K->at<double>(1,2) = (K->at<double>(1,2)+0.5)*scale - 0.5;
-        }
-        std::cout << "Images downscaled to " << imgL.cols << "×" << imgL.rows << "\n";
-    }
+    // Note: images stay at full calibration resolution here — sparse matching
+    // (below) runs on full-res images for the most accurate pose estimate.
+    // Downscaling happens right after, before rectification.
 
     // ── 2. Sparse matching / GT pose ─────────────────────────────────────────────
     std::cout << "\n=== Sparse Matching ===\n";
@@ -172,6 +158,39 @@ int main(int argc, char** argv) {
     if (calib.swapped) {
         std::swap(imgL, imgR);
         std::swap(rect_in_l, rect_in_r);
+    }
+
+    // Downscale images and adjust everything derived from pixel coordinates
+    // consistently, now that sparse matching (full-res) is done.
+    // K is loaded at full calibration resolution. After resize by `scale`:
+    //   f  (K[0,0], K[1,1]) scales linearly with resolution.
+    //   cx (K[0,2]), cy (K[1,2]) shift by half a pixel at each pyramid level
+    //   (the +0.5 / -0.5 accounts for the pixel-centre convention across scales).
+    if (scale != 1.0) {
+        cv::resize(imgL, imgL, cv::Size(), scale, scale, cv::INTER_AREA);
+        cv::resize(imgR, imgR, cv::Size(), scale, scale, cv::INTER_AREA);
+        for (cv::Mat* K : {&calib.K0, &calib.K1}) {
+            K->at<double>(0,0) *= scale; K->at<double>(1,1) *= scale;
+            K->at<double>(0,2) = (K->at<double>(0,2)+0.5)*scale - 0.5;
+            K->at<double>(1,2) = (K->at<double>(1,2)+0.5)*scale - 0.5;
+        }
+        // F relates full-res pixel coords: x2^T F x1 = 0. Under x' = S x with
+        // S = diag(scale, scale, 1), the matrix that keeps the relation valid
+        // for the downscaled coords is F' = S^-T F S^-1 (needed by
+        // rectifyLoopZhang, which consumes calib.F directly).
+        if (!calib.F.empty()) {
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 3; ++c) {
+                    double s = (r < 2 ? scale : 1.0) * (c < 2 ? scale : 1.0);
+                    calib.F.at<double>(r,c) /= s;
+                }
+        }
+        // rect_in_l/rect_in_r are the Loop-Zhang inlier points, collected at
+        // full resolution — must move to the same scale as imgL/imgR.
+        for (auto* pts : {&rect_in_l, &rect_in_r})
+            for (auto& p : *pts) { p.x *= (float)scale; p.y *= (float)scale; }
+
+        std::cout << "Images downscaled to " << imgL.cols << "×" << imgL.rows << "\n";
     }
 
     // ── 3. Rectification ─────────────────────────────────────────────────
