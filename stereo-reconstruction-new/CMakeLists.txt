@@ -94,39 +94,17 @@ add_library(sparse_matching_lib STATIC
 add_stereo_exe(sparse_matching src/sparse_matching.cpp)
 target_link_libraries(sparse_matching sparse_matching_lib)
 
-# ── 1b. Sparse matching test/experiment runner (pose error vs. DTU GT) ──────
-add_stereo_exe(test_sparse_matching
-    tests/test_sparse_matching.cpp
-    tests/eval_common.cpp
+# ── 1b. Sparse matching vs. DTU ground truth (backend/parameter study runner) ─
+add_stereo_exe(eval_sparse_matching
+    tests/eval_sparse_matching.cpp
     src/sparse_matching.cpp
 )
-target_link_libraries(test_sparse_matching sparse_matching_lib)
-target_compile_definitions(test_sparse_matching PRIVATE PIPELINE_BUILD)
+target_link_libraries(eval_sparse_matching sparse_matching_lib)
+target_compile_definitions(eval_sparse_matching PRIVATE PIPELINE_BUILD)
 
-# ── 1c. Eight-point vs. real DTU ground truth (Track B) ─────────────────────
-add_stereo_exe(test_eightpoint_ground_truth
-    tests/test_eightpoint_ground_truth.cpp
-    tests/eval_common.cpp
-    src/sparse_matching.cpp
-)
-target_link_libraries(test_eightpoint_ground_truth sparse_matching_lib)
-target_compile_definitions(test_eightpoint_ground_truth PRIVATE PIPELINE_BUILD)
-
-# ── 1d. SIFT-only agreement, custom vs. OpenCV (Track A) ────────────────────
-add_stereo_exe(test_sift_agreement
-    tests/test_sift_agreement.cpp
-    tests/eval_common.cpp
-)
-target_link_libraries(test_sift_agreement sparse_matching_lib)
-
-# ── 1e. SIFT vs. known homography, custom vs. OpenCV (Track B, guide 1.3) ───
-add_stereo_exe(test_sift_homography_gt
-    tests/test_sift_homography_gt.cpp
-    tests/eval_common.cpp
-    src/sparse_matching.cpp
-)
-target_link_libraries(test_sift_homography_gt sparse_matching_lib)
-target_compile_definitions(test_sift_homography_gt PRIVATE PIPELINE_BUILD)
+# ── 1c. Camera-center / baseline geometry report (calibration-only, no images needed) ────────
+add_stereo_exe(camera_geometry_report tests/camera_geometry_report.cpp)
+target_link_libraries(camera_geometry_report sparse_matching_lib)
 
 # ── 2. Rectification ────────────────────────────────────────────────────────
 add_stereo_exe(rectification
@@ -186,7 +164,14 @@ add_stereo_exe(mesh
 )
 target_compile_definitions(mesh PRIVATE BUILDING_MESH)
 
-# ── 8. ICP fusion (requires Ceres) ──────────────────────────────────────────
+# ── 8. Poisson surface reconstruction (from oriented point cloud) ───────────
+add_stereo_exe(poisson_mesh
+    include/mc/Volume.cpp
+    src/poisson_mesh.cpp
+)
+target_include_directories(poisson_mesh PRIVATE ${FLANN_INCLUDE_DIR})
+
+# ── 9. ICP fusion (requires Ceres) ──────────────────────────────────────────
 if(Ceres_FOUND)
     add_stereo_exe(icp_fuse
         ${COMMON_SRC}

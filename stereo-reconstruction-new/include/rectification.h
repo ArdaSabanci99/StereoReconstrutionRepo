@@ -10,16 +10,17 @@ struct RectifyResult {
     cv::Mat Q;           // disparity-to-depth 4×4 matrix
     cv::Mat R0_rect;     // rotation applied to left camera
     cv::Mat P1, P2;      // rectified projection matrices
+    cv::Mat mask1, mask2;  
 };
 
 
-// Loop-Zhang Rectification
-// Uses pure uncalibrated geometry. F is estimated from sparse matching.
-// cv_pts_l and cv_pts_r must be the filtered, verified INLIER matched points.
+// Loop-Zhang Rectification, faithful closed-form implementation (Loop &
+// Zhang, CVPR 1999): distortion-minimizing z search, H/H' coupled via F,
+// symmetric shear correction for both images. Uses pure uncalibrated
+// geometry; F is estimated from sparse matching. No point correspondences
+// are needed beyond F itself.
 RectifyResult rectifyLoopZhang(const cv::Mat& left, const cv::Mat& right,
-    const cv::Mat& F_cv,
-    const std::vector<cv::Point2f>& cv_pts_l,
-    const std::vector<cv::Point2f>& cv_pts_r);
+    const CalibData& calib);
 
 // OpenCV baseline (for comparison / fallback)
 RectifyResult rectifyOpenCV(const cv::Mat& left, const cv::Mat& right,

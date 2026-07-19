@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <filesystem>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -23,9 +24,11 @@ static void printUsage(const char* name) {
         << "  --no-lr\n"
         << "  --no-median\n"
         << "Pipeline:\n"
-        << "  --manual-rect                                  (Loop-Zhang rectification)\n"
+        << "  --manual-rect                                  (Loop-Zhang closed-form rectification)\n"
         << "  --scale     <factor>                           (default: 0.5)\n"
-        << "  --test-gt-pose                                 (skip sparse matching, use DTU GT pose)\n"
+        << "  --test-gt-pose                                 (skip sparse matching, use DTU GT pose;\n"
+        << "                                                   also derives GT F, so combines with\n"
+        << "                                                   --manual-rect)\n"
         << "Sparse matching:\n"
         << "  --sm-opencv                                    (use OpenCV sparse matching; default: manual)\n"
         << "  --sm-custom-sift                                (manual pipeline only: use our own SIFT\n"
@@ -93,12 +96,6 @@ int main(int argc, char** argv) {
         else if (a == "--zmax"    && i+1 < argc) max_depth_mm       = std::stof(argv[++i]);
     }
 
-    if (test_gt_pose && manual_rect) {
-        std::cerr << "[pipeline] --test-gt-pose is incompatible with --manual-rect "
-                     "(calib.F is not set in GT-pose mode).\n";
-        return 1;
-    }
-
     // ── 1. Load images & calibration ─────────────────────────────────────
     std::cout << "\n=== Loading scene " << sceneId << " views "
               << viewL << "–" << viewR << " ===\n";
@@ -109,8 +106,6 @@ int main(int argc, char** argv) {
     if (imgL.empty() || imgR.empty()) {
         std::cerr << "Could not load images.\n"; return 1;
     }
-    printMatInfo("Left Image",  imgL);
-    printMatInfo("Right Image", imgR);
 
     // Note: images stay at full calibration resolution here — sparse matching
     // (below) runs on full-res images for the most accurate pose estimate.
@@ -127,8 +122,6 @@ int main(int argc, char** argv) {
                   << (smParams.use_custom_sift ? "manual SIFT" : "OpenCV SIFT") << "\n";
     }
 
-    std::vector<cv::Point2f> rect_in_l, rect_in_r;   // inlier points for Loop-Zhang (empty in GT mode)
-
     if (test_gt_pose) {
         // Load GT relative pose directly from DTU calibration files — skip SIFT/RANSAC.
         auto [K0_gt, R0_gt, t0_gt] = loader.decomposeProjectionMatrix(viewL);
@@ -136,6 +129,22 @@ int main(int argc, char** argv) {
         (void)K0_gt; (void)K1_gt;
         calib.R_rel = R1_gt * R0_gt.t();
         calib.t_rel = t1_gt - calib.R_rel * t0_gt;   // in mm (DTU world units)
+
+        // GT fundamental matrix, so --manual-rect (Loop-Zhang) can also be
+        // exercised against exact geometry instead of only the OpenCV path:
+        // X2 = R_rel*X1 + t_rel  =>  E = [t_rel]_x * R_rel  =>  F = K1^-T E K0^-1,
+        // same E<->F convention as sparse_matching.cpp (E = K1^T * F * K0).
+        // Must run before verifyLeftRightCameraOrder() below so the L/R swap
+        // (which also transposes F) sees a calib.F consistent with the
+        // pre-swap K0/K1/R_rel/t_rel it's being swapped alongside.
+        const cv::Mat& t = calib.t_rel;
+        cv::Mat tx = (cv::Mat_<double>(3, 3) <<
+                      0, -t.at<double>(2), t.at<double>(1),
+                      t.at<double>(2), 0, -t.at<double>(0),
+                      -t.at<double>(1), t.at<double>(0), 0);
+        cv::Mat E_gt = tx * calib.R_rel;
+        calib.F = calib.K1.inv().t() * E_gt * calib.K0.inv();
+
         calib.verifyLeftRightCameraOrder();
     } else {
         SparseMatchResult sparse = computeSparseMatches(imgL, imgR, calib, opencv_sm, smParams);
@@ -144,20 +153,10 @@ int main(int argc, char** argv) {
         fs::create_directories(sparse_path);
         saveCalibData(calib, sparse_path + "/calib_" + viewL + "_" + viewR + ".yaml");
         saveSparseMatchInliers(sparse, sparse_path + "/inliers_" + viewL + "_" + viewR + ".yaml");
-
-        for (int i = 0; i < sparse.n_matches; ++i)
-            if (sparse.inlier_mask[i]) {
-                rect_in_l.push_back(sparse.pts_left[i]);
-                rect_in_r.push_back(sparse.pts_right[i]);
-            }
     }
 
-    // rect_in_l/rect_in_r were collected against the pre-swap imgL/imgR, so they
-    // must be swapped together with the images or the correspondences end up
-    // cross-matched to the wrong (now-relabelled) left/right image.
     if (calib.swapped) {
         std::swap(imgL, imgR);
-        std::swap(rect_in_l, rect_in_r);
     }
 
     // Downscale images and adjust everything derived from pixel coordinates
@@ -185,20 +184,17 @@ int main(int argc, char** argv) {
                     calib.F.at<double>(r,c) /= s;
                 }
         }
-        // rect_in_l/rect_in_r are the Loop-Zhang inlier points, collected at
-        // full resolution — must move to the same scale as imgL/imgR.
-        for (auto* pts : {&rect_in_l, &rect_in_r})
-            for (auto& p : *pts) { p.x *= (float)scale; p.y *= (float)scale; }
 
         std::cout << "Images downscaled to " << imgL.cols << "×" << imgL.rows << "\n";
     }
 
     // ── 3. Rectification ─────────────────────────────────────────────────
-    std::cout << "\n=== Rectification (" << (manual_rect ? "Loop-Zhang" : "OpenCV") << ") ===\n";
+    std::string rectMethodName = !manual_rect ? "OpenCV" : "Loop-Zhang";
+    std::cout << "\n=== Rectification (" << rectMethodName << ") ===\n";
     RectifyResult rect;
 
-    rect = manual_rect ? rectifyLoopZhang(imgL, imgR, calib.F, rect_in_l, rect_in_r)
-                       : rectifyOpenCV(imgL, imgR, calib);
+    rect = !manual_rect ? rectifyOpenCV(imgL, imgR, calib)
+                        : rectifyLoopZhang(imgL, imgR, calib);
 
     std::string rect_path = "results/scene" + sceneId + "/rectification";
     fs::create_directories(rect_path);
@@ -214,7 +210,7 @@ int main(int argc, char** argv) {
     // ── 4. Dense matching ─────────────────────────────────────────────────
     std::cout << "\n=== Dense Matching (ndisp=" << mp.num_disparities
               << " window=" << mp.window_size << ") ===\n";
-    cv::Mat disp = computeDisparity(rect.left_rect, rect.right_rect, mp);
+    cv::Mat disp = computeDisparity(rect.left_rect, rect.right_rect, mp, rect.mask1, rect.mask2);
 
     cv::Mat disp_vis;
     cv::normalize(disp, disp_vis, 0, 255, cv::NORM_MINMAX, CV_8U);
@@ -227,9 +223,27 @@ int main(int argc, char** argv) {
 
     // ── 5. Depth & point cloud ────────────────────────────────────────────
     std::cout << "\n=== Point Cloud ===\n";
-    PointCloud cloud = disparityToCloud(disp, rect.Q, rect.left_rect,
-                                        std::max(1.0f, (float)mp.min_disparity),
-                                        max_depth_mm);
+    float min_disp = std::max(1.0f, (float)mp.min_disparity);
+    PointCloud cloud;
+    if (manual_rect) {
+        // Loop-Zhang produces a general projective warp, not a calibrated
+        // rectified camera pair — there is no valid Q matrix (see rectification.cpp).
+        // Triangulate per-pixel via the rectified projection matrices instead.
+        std::vector<cv::Point2f> pts1, pts2;
+        std::vector<cv::Vec3b> colors;
+        for (int y = 0; y < disp.rows; ++y)
+            for (int x = 0; x < disp.cols; ++x) {
+                float d = disp.at<float>(y, x);
+                if (d < min_disp) continue;
+                pts1.emplace_back((float)x, (float)y);
+                pts2.emplace_back((float)x - d, (float)y);
+                colors.push_back(rect.left_rect.at<cv::Vec3b>(y, x));
+            }
+        cloud = disparityToCloudViaP(disp, rect.P1, rect.P2, rect.left_rect,
+                                  min_disp, max_depth_mm, rect.mask1, rect.mask2);
+    } else {
+        cloud = disparityToCloud(disp, rect.Q, rect.left_rect, min_disp, max_depth_mm);
+    }
 
     // Load left camera world pose now that swapped flag is settled after sparse matching.
     loader.loadLeftExtrinsics(calib, viewL, viewR);
@@ -263,7 +277,7 @@ int main(int argc, char** argv) {
         } else {
             DtuEvalResult er = evaluateCloudVsReference(cloud.points, gt);
             printDtuEval(er, "scene" + sceneId + " views " + viewL + "-" + viewR
-                             + " (" + (manual_rect ? "Loop-Zhang" : "OpenCV") + ")");
+                             + " (" + rectMethodName + ")");
         }
     }
 

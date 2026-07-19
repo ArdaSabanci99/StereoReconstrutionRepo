@@ -11,6 +11,15 @@
 namespace fs = std::filesystem;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// NOTE: computeDisparity takes optional mask1/mask2 (CV_8U, 255 = valid
+// content, 0 = black warp padding, same contract as RectifyResult::mask1/
+// mask2 from rectification.cpp) for backward compatibility with callers,
+// but the padding-invalidation logic that used to consume them is
+// currently disabled -- see the comments at computeSGM, computeDisparityRL,
+// and computeDisparity below.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // SAD
 // ─────────────────────────────────────────────────────────────────────────────
 static cv::Mat computeSAD(const cv::Mat& L, const cv::Mat& R, const MatchParams& p) {
@@ -156,14 +165,25 @@ static cv::Mat computeCensus(const cv::Mat& L, const cv::Mat& R, const MatchPara
 // ─────────────────────────────────────────────────────────────────────────────
 // Semi-Global Matching  (Hirschmüller 2008)   — C1 challenge
 // Uses Census cost volume + 8-direction path aggregation.
+//
+// mask1/mask2 are accepted for signature compatibility but currently
+// unused -- the mask-based padding invalidation this was for (forcing
+// pixels under black warp-padding to the same sentinel cost as genuine
+// border pixels, so the P1/P2 smoothness aggregation can't drag a
+// degenerate zero-Hamming-cost padding match into real neighbouring
+// pixels) is disabled. See the commented-out logic further down.
 // ─────────────────────────────────────────────────────────────────────────────
-static cv::Mat computeSGM(const cv::Mat& L, const cv::Mat& R, const MatchParams& p) {
+static cv::Mat computeSGM(const cv::Mat& L, const cv::Mat& R, const MatchParams& p,
+                           const cv::Mat& mask1 = cv::Mat(), const cv::Mat& mask2 = cv::Mat()) {
     const int rows = L.rows, cols = L.cols;
     const int D    = p.num_disparities;
     const int dmin = p.min_disparity;
     const int P1   = p.P1;
     const int P2   = p.P2;
     const int ch   = 2;   // census half-window
+    // Mask-based padding invalidation disabled, see computeDisparity.
+    // const bool has_mask1 = !mask1.empty();
+    // const bool has_mask2 = !mask2.empty();
 
     // Census images (small: rows*cols*4 bytes each)
     cv::Mat cL = censusTransform(L, ch);
@@ -204,6 +224,10 @@ static cv::Mat computeSGM(const cv::Mat& L, const cv::Mat& R, const MatchParams&
                 // ── Census cost for this pixel (computed on the fly) ──────
                 uint16_t c_arr[256];   // D ≤ 256 guaranteed by sane usage
                 const bool in_border = (y < ch || y >= rows-ch || x < ch || x >= cols-ch);
+                // Mask-based padding invalidation disabled: was
+                // `const bool left_masked = has_mask1 && mask1.at<uchar>(y, x) == 0;`
+                // added to `in_border` below, plus a `right_masked` check on
+                // mask2 inside the d-loop.
                 if (in_border) {
                     std::fill(c_arr, c_arr + D, (uint16_t)24);
                 } else {
@@ -277,13 +301,21 @@ static void lrConsistencyCheck(cv::Mat& disp_lr, const cv::Mat& disp_rl,
         }
 }
 
-// Compute right-to-left disparity.
-// Standard LR disparity searches LEFT in the right image (x_r = x - d).
-// For RL, we need to search RIGHT in the left image (x_l = x_r + d).
-// Trick: flip both images horizontally so "search left" becomes "search right",
-// then flip the disparity map back.
+// ─────────────────────────────────────────────────────────────────────────────
+// Mask-based padding invalidation disabled (see computeDisparity). Was:
+//
+// static void applyValidityMask(cv::Mat& disp, const cv::Mat& mask1) {
+//     if (mask1.empty()) return;
+//     for (int y = 0; y < disp.rows; ++y)
+//         for (int x = 0; x < disp.cols; ++x)
+//             if (mask1.at<uchar>(y, x) == 0)
+//                 disp.at<float>(y, x) = -1.0f;
+// }
+// ─────────────────────────────────────────────────────────────────────────────
+
 static cv::Mat computeDisparityRL(const cv::Mat& L, const cv::Mat& R,
-                                   const MatchParams& p) {
+                                   const MatchParams& p,
+                                   const cv::Mat& mask1, const cv::Mat& mask2) {
     MatchParams pr = p;
     pr.lr_check      = false;
     pr.median_filter = false;
@@ -292,6 +324,9 @@ static cv::Mat computeDisparityRL(const cv::Mat& L, const cv::Mat& R,
     cv::flip(L, Lf, 1);
     cv::flip(R, Rf, 1);
 
+    // Mask-based padding invalidation disabled: this used to also flip
+    // mask1/mask2 and pass them through (roles swapped: Rf plays "left"
+    // here, so it took the flipped RIGHT mask, and Lf took the left mask).
     cv::Mat disp_rl = computeDisparity(Rf, Lf, pr);
 
     cv::Mat disp_rl_flipped;
@@ -342,7 +377,8 @@ static void medianAndFill(cv::Mat& disp) {
 // Public interface
 // ─────────────────────────────────────────────────────────────────────────────
 cv::Mat computeDisparity(const cv::Mat& left_rect, const cv::Mat& right_rect,
-                          const MatchParams& params) {
+                          const MatchParams& params,
+                          const cv::Mat& mask1, const cv::Mat& mask2) {
     cv::Mat gL, gR;
     if (left_rect.channels()  == 3) cv::cvtColor(left_rect,  gL, cv::COLOR_BGR2GRAY);
     else gL = left_rect;
@@ -357,7 +393,7 @@ cv::Mat computeDisparity(const cv::Mat& left_rect, const cv::Mat& right_rect,
         case MatchMethod::MANUAL_SSD:    disp = computeSSD   (gL, gR, params); break;
         case MatchMethod::MANUAL_NCC:    disp = computeNCC   (gL, gR, params); break;
         case MatchMethod::MANUAL_CENSUS: disp = computeCensus(gL, gR, params); break;
-        case MatchMethod::MANUAL_SGM:    disp = computeSGM   (gL, gR, params); break;
+        case MatchMethod::MANUAL_SGM:    disp = computeSGM   (gL, gR, params, mask1, mask2); break;
         case MatchMethod::OPENCV_BM: {
             auto bm = cv::StereoBM::create(params.num_disparities, params.window_size);
             cv::Mat d16; bm->compute(gL, gR, d16);
@@ -380,11 +416,15 @@ cv::Mat computeDisparity(const cv::Mat& left_rect, const cv::Mat& right_rect,
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     std::cout << "[matching] time = " << ms << " ms\n";
 
+    // Mask-based padding invalidation disabled: this used to call
+    // applyValidityMask(disp, mask1) here (before post-processing) and
+    // again after, to keep black warp-padding out of the disparity map.
+
     // ── Post-processing ──────────────────────────────────────────────────
     if (params.lr_check &&
         params.method != MatchMethod::OPENCV_BM &&
         params.method != MatchMethod::OPENCV_SGBM) {
-        cv::Mat disp_rl = computeDisparityRL(gL, gR, params);
+        cv::Mat disp_rl = computeDisparityRL(gL, gR, params, mask1, mask2);
         lrConsistencyCheck(disp, disp_rl);
         std::cout << "[matching] L-R check done.\n";
     }
@@ -402,8 +442,11 @@ cv::Mat computeDisparity(const cv::Mat& left_rect, const cv::Mat& right_rect,
 #ifndef PIPELINE_BUILD
 int main(int argc, char** argv) {
     if (argc < 4) {
-        std::cerr << "Usage: matching <scene_id> <left_id> <right_id> [method] [--ndisp N] [--window W]\n"
-                     "  methods: sad ssd ncc census sgm bm sgbm\n";
+        std::cerr << "Usage: matching <scene_id> <left_id> <right_id> [method] "
+                     "[--ndisp N] [--window W] [--tag T]\n"
+                     "  methods: sad ssd ncc census sgm bm sgbm\n"
+                     "  --tag T: which rectification output to read "
+                     "(opencv | loopzhang | loopzhang_correct; default opencv)\n";
         return 1;
     }
     const std::string sceneId(argv[1]);
@@ -420,25 +463,44 @@ int main(int argc, char** argv) {
     else if (method_str == "bm")    params.method = MatchMethod::OPENCV_BM;
     else                            params.method = MatchMethod::OPENCV_SGBM;
 
+    std::string tag = "opencv";
     for (int i = 5; i < argc; ++i) {
         std::string a(argv[i]);
         if      (a == "--ndisp"  && i+1 < argc) params.num_disparities = std::stoi(argv[++i]);
         else if (a == "--window" && i+1 < argc) params.window_size     = std::stoi(argv[++i]);
+        else if (a == "--tag"    && i+1 < argc) tag                    = argv[++i];
     }
 
-    std::string load_path = "results/scene" + sceneId + "/rectification";
+    // NOTE: this used to read from "results/scene<id>/rectification" directly
+    // -- rectification.cpp now writes into a tagged subdirectory
+    // ("rectification/opencv/", "rectification/loopzhang/", etc.), so that
+    // flat path either fails to find images or picks up stale ones left
+    // over from before the tag subdirectories existed. Fixed below.
+    std::string load_path = "results/scene" + sceneId + "/rectification/" + tag;
     cv::Mat lRect = cv::imread(load_path + "/view_" + viewL + ".png");
     cv::Mat rRect = cv::imread(load_path + "/view_" + viewR + ".png");
-    if (lRect.empty() || rRect.empty()) { std::cerr << "Run rectification first.\n"; return 1; }
+    if (lRect.empty() || rRect.empty()) {
+        std::cerr << "Run rectification first (tag=" << tag << "): " << load_path << "\n";
+        return 1;
+    }
+
+    // Validity masks written by rectification.cpp alongside the rectified
+    // images -- see the padding/SGM-noise discussion this fix addresses.
+    cv::Mat mask1 = cv::imread(load_path + "/mask_" + viewL + ".png", cv::IMREAD_GRAYSCALE);
+    cv::Mat mask2 = cv::imread(load_path + "/mask_" + viewR + ".png", cv::IMREAD_GRAYSCALE);
+    if (mask1.empty() || mask2.empty())
+        std::cout << "[matching] WARNING: no validity masks found at " << load_path
+                   << " -- proceeding without padding masking.\n";
 
     std::string calib_path = "results/scene" + sceneId + "/sparse_matching/calib_" + viewL + "_" + viewR + ".yaml";
     CalibData calib = loadCalibData(calib_path);
     if (calib.swapped) {
         std::cout << "[matching] L/R swapped during sparse matching — swapping rectified images.\n";
         std::swap(lRect, rRect);
+        std::swap(mask1, mask2);
     }
 
-    cv::Mat disp = computeDisparity(lRect, rRect, params);
+    cv::Mat disp = computeDisparity(lRect, rRect, params, mask1, mask2);
 
     cv::Mat vis; cv::normalize(disp, vis, 0, 255, cv::NORM_MINMAX, CV_8U);
     cv::applyColorMap(vis, vis, cv::COLORMAP_JET);

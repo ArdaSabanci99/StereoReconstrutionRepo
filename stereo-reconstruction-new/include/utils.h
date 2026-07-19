@@ -5,56 +5,79 @@
 
 namespace fs = std::filesystem;
 
-// ── Camera calibration for a stereo pair ────────────────────────────────────
+/**
+ * @brief Struct to hold calibration data for stereo pairs. 
+ */
 struct CalibData {
-    cv::Mat K0, K1;          // 3×3 intrinsic matrices
-    cv::Mat R0, t0;          // left camera absolute pose (world → camera), used for ICP world-frame alignment only
-    // Relative pose: right camera relative to left
-    cv::Mat R_rel;           // R1 * R0^T
-    cv::Mat t_rel;           // metric translation (sparse.t * baseline), not a unit vector
+    cv::Mat K0, K1;         // Intrinsic matrices
+    cv::Mat R0, t0;         // Left camera absolute pose for transformation from camera space to world space (required for ICP multi-pair fusion)
+    
+    cv::Mat R_rel;          // Relative pose: (R1 * R0^T)
+    cv::Mat t_rel;          // Metric translation
 
-    cv::Mat F;               // 3×3 fundamental matrix (set by sparse matching, used by rectifyLoopZhang)
+    cv::Mat F;              // Fundamental matrix
 
-    double baseline = 0.0;   // |camera centres| in mm
-    bool   swapped  = false; // true if L/R were swapped during sparse matching to enforce t[0]>0
+    double baseline = 0.0;
+    bool swapped = false;   // Flag indicating if the left/right cameras were swapped to ensure left camera is geometrically to the left of the right camera
 
-    // Validation helpers — three levels of completeness:
-    //   hasIntrinsics:   K0, K1, baseline — minimum for sparse matching
-    //   hasRelativePose: R_rel, T_rel     — relative pose between the two cameras
-    //   hasLeftCamExtrinsics: R0, t0       — left camera world-frame pose, needed for ICP alignment
-    bool hasIntrinsics()        const { return !K0.empty() && !K1.empty() && baseline > 0.0; }
-    bool hasRelativePose()      const { return !R_rel.empty() && !t_rel.empty(); }
-    bool hasLeftCamExtrinsics() const { return !R0.empty() && !t0.empty(); }
-    bool hasFundamentalMatrix()  const { return !F.empty(); }
-    bool isFullyValid()         const { return hasIntrinsics() && hasRelativePose() && hasLeftCamExtrinsics(); }
+    // Utility functions to check if the calibration data is complete
+    bool hasIntrinsics()       const { return !K0.empty() && !K1.empty() && baseline > 0.0; }
+    bool hasRelativePose()     const { return !R_rel.empty() && !t_rel.empty(); }
+    bool hasFundamentalMatrix() const { return !F.empty(); }
 
-    // check if left camera is geometrically to the left
-    // if not, fix
+    /**
+     * @brief Verifies that the left and right cameras are in the correct order based on the relative translation vector.
+     *        If the fundamental matrix is present, it will also be transposed to maintain consistency with the swapped cameras.
+     */
     void verifyLeftRightCameraOrder();
 };
 
-// ── CalibData serialisation (YAML via cv::FileStorage) ──────────────────────
-// Saves/loads the complete CalibData struct. Complements DTUDataLoader::loadCalibIntrinsics,
-// which only populates K0, K1, baseline. Use these to persist/reload the full
-// (potentially-swapped) calib between standalone pipeline steps.
+/**
+ * @brief Saves the given calibration data to a YAML file.
+ * 
+ * @param calib Calibration data to be saved.
+ * @param path Path to the output YAML file.
+ */
 void saveCalibData(const CalibData& calib, const std::string& path);
+
+/**
+ * @brief Loads calibration data from a YAML file.
+ * 
+ * @param path Path to the input YAML file.
+ * @return CalibData 
+ */
 CalibData loadCalibData(const std::string& path);
 
-// ── Inlier correspondences serialisation ────────────────────────────────────
-// Saves/loads the RANSAC inlier point pairs produced by sparse matching, required by rectifyLoopZhang
-void saveInlierPoints(const std::vector<cv::Point2f>& left,
-                      const std::vector<cv::Point2f>& right,
-                      const std::string& path);
-void loadInlierPoints(const std::string& path,
-                      std::vector<cv::Point2f>& left,
-                      std::vector<cv::Point2f>& right);
-
-// ── Disparity save / load (16-bit PNG, scale ×16) ───────────────────────────
+/**
+ * @brief Saves the disparity map to a PNG file. 
+ *        The disparity values are scaled by 16 and stored as 16-bit unsigned integers.
+ * 
+ * @param disp Disparity map to be saved.
+ * @param path Path to the output PNG file.
+ */
 void saveDisparity(const cv::Mat& disp, const std::string& path);
+
+/**
+ * @brief Loads a disparity map from a PNG file.
+ *        The disparity values are expected to be stored as 16-bit unsigned integers and will be scaled by 16.
+ * 
+ * @param path Path to the input PNG file.
+ * @return cv::Mat 
+ */
 cv::Mat loadDisparity(const std::string& path);
 
-// ── View ID padding (1 → "001") ─────────────────────────────────────────────
+/**
+ * @brief Pads a view ID with leading zeros.
+ * 
+ * @param id The view ID to be padded.
+ * @return std::string The padded view ID.
+ */
 std::string padViewId(int id);
 
-// ── Debug print ──────────────────────────────────────────────────────────────
+/**
+ * @brief Prints information about a cv::Mat object.
+ * 
+ * @param name Name of the matrix (for display purposes).
+ * @param m The cv::Mat object whose information is to be printed.
+ */
 void printMatInfo(const std::string& name, const cv::Mat& m);

@@ -27,4 +27,4 @@ struct MatchParams {
 // Compute disparity map from rectified grayscale pair.
 // Returns CV_32F disparity (invalid pixels = -1).
 cv::Mat computeDisparity(const cv::Mat& left_rect, const cv::Mat& right_rect,
-                          const MatchParams& params);
+                          const MatchParams& params, const cv::Mat& mask1 = cv::Mat(), const cv::Mat& mask2 = cv::Mat());

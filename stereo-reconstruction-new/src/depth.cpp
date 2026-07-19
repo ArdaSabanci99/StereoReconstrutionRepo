@@ -25,6 +25,13 @@ cv::Mat disparityToDepth(const cv::Mat& disparity, const CalibData& calib) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Disparity → Point Cloud via Q matrix (standard after rectification)
 // Q = [1 0 0 -cx; 0 1 0 -cy; 0 0 0 f; 0 0 -1/Tx 0]
+//
+// NOTE: Q is only a valid camera model for a calibrated, pure-rotation
+// rectification (shared single focal length, e.g. OpenCV's stereoRectify
+// output). For a general projective rectification (Loop-Zhang) there is no
+// valid single Q -- use disparityToCloudViaP below instead. Callers should
+// check res.Q.empty() (or the persisted Q in proj_*.yaml) to pick the right
+// function; see main() below.
 // ─────────────────────────────────────────────────────────────────────────────
 PointCloud disparityToCloud(const cv::Mat& disp, const cv::Mat& Q,
                              const cv::Mat& color_img,
@@ -97,6 +104,67 @@ cv::Mat triangulatePointDLT(const cv::Point2f& pt1, const cv::Point2f& pt2,
     cv::SVD::compute(A, S, U, Vt, cv::SVD::FULL_UV);
     cv::Mat X = Vt.row(3).t();   // homogeneous
     return X.rowRange(0,3) / X.at<double>(3);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Disparity → Point Cloud via P1/P2 (general projective rectification path)
+//
+// Used instead of disparityToCloud/Q whenever the rectifier was a general
+// projective warp (Loop-Zhang) rather than a calibrated pure-rotation
+// rectification -- see the note on disparityToCloud above and the comment
+// in rectification.cpp's finalizeRectification explaining why Q is left
+// empty in that case. Reuses triangulatePointDLT: for a disparity pixel at
+// (x,y) with value d, the corresponding right-image point is (x-d, y)
+// (rectification guarantees the same row, d is the horizontal offset).
+// This is O(1) DLT solves per pixel rather than Q's O(1) divide, so it's
+// slower, but it's the only correct option for a non-calibrated rectifying
+// homography pair.
+// ─────────────────────────────────────────────────────────────────────────────
+PointCloud disparityToCloudViaP(const cv::Mat& disp, const cv::Mat& P1, const cv::Mat& P2,
+                                 const cv::Mat& color_img,
+                                 float min_disp, float max_depth,
+                                 const cv::Mat& mask1, const cv::Mat& mask2) {
+    bool has_color = !color_img.empty();
+    bool has_mask1 = !mask1.empty();
+    bool has_mask2 = !mask2.empty();
+    PointCloud cloud;
+
+    for (int y = 0; y < disp.rows; ++y)
+        for (int x = 0; x < disp.cols; ++x) {
+            float d = disp.at<float>(y, x);
+            if (d < min_disp) continue;
+
+            // Defensive re-check against the validity masks: matching.cpp
+            // should already have invalidated disparity computed over black
+            // warp padding (see the padding/SGM-noise discussion), but this
+            // is cheap insurance against stale disparity maps computed
+            // before that fix, or any other source that ignored the masks.
+            if (has_mask1 && mask1.at<uchar>(y, x) == 0) continue;
+
+            int xr = cvRound(x - d);
+            if (xr < 0 || xr >= disp.cols) continue;
+            if (has_mask2 && mask2.at<uchar>(y, xr) == 0) continue;
+
+            cv::Point2f pl((float)x, (float)y);
+            cv::Point2f pr((float)(x - d), (float)y);
+            cv::Mat X = triangulatePointDLT(pl, pr, P1, P2);
+
+            float Z = (float)X.at<double>(2);
+            if (Z <= 0 || Z > max_depth) continue;
+
+            cloud.points.emplace_back((float)X.at<double>(0),
+                                       (float)X.at<double>(1), Z);
+
+            if (has_color) {
+                cv::Vec3b c = color_img.at<cv::Vec3b>(y, x);
+                cloud.colors.emplace_back(c[2], c[1], c[0], 255);  // BGR→RGBA
+            } else {
+                cloud.colors.emplace_back(200, 200, 200, 255);
+            }
+        }
+
+    std::cout << "[depth] disparityToCloudViaP → " << cloud.points.size() << " points\n";
+    return cloud;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,7 +291,8 @@ void savePointCloudOFF(const PointCloud& cloud, const std::string& path) {
 #if !defined(PIPELINE_BUILD) && !defined(BUILDING_ICP) && !defined(BUILDING_MESH)
 int main(int argc, char** argv) {
     if (argc < 5) {
-        std::cerr << "Usage: depth <data_path> <scene_id> <left_id> <right_id> [method]\n";
+        std::cerr << "Usage: depth <data_path> <scene_id> <left_id> <right_id> [method] [rect_tag]\n"
+                     "  rect_tag: opencv | loopzhang | loopzhang_correct (default: opencv)\n";
         return 1;
     }
     fs::path dataPath(argv[1]);
@@ -231,41 +300,56 @@ int main(int argc, char** argv) {
     const std::string viewL = padViewId(std::stoi(argv[3]));
     const std::string viewR = padViewId(std::stoi(argv[4]));
     std::string method = (argc >= 6) ? argv[5] : "sgm";
+    std::string rectTag = (argc >= 7) ? argv[6] : "opencv";
 
     std::string match_path = "results/scene" + sceneId + "/matching";
     cv::Mat disp = loadDisparity(match_path + "/view_" + viewL + "_" + viewR + "_" + method + "_raw.png");
     cv::Mat color = cv::imread(match_path + "/view_" + viewL + "_" + viewR + "_" + method + ".png");
 
-   
     std::string calib_path = "results/scene" + sceneId + "/sparse_matching/calib_" + viewL + "_" + viewR + ".yaml";
     CalibData calib = loadCalibData(calib_path);
     if (!calib.hasIntrinsics())
         throw std::runtime_error("[depth] Calib incomplete — run sparse_matching first: " + calib_path);
 
-    // Load left correct extrinsics
-    std::string effLeftId = calib.swapped ? viewR : viewL;
-    std::string effRightId = calib.swapped ? viewL : viewR;
+    // ── Load the rectifier's actual P1/P2/Q (and masks) instead of
+    // hand-building a Q from the ORIGINAL, unrectified calib.K0 intrinsics.
+    // That reconstruction is only valid for a calibrated pure-rotation
+    // rectification and silently produced wrong 3D geometry for the
+    // Loop-Zhang (projective) path, since it ignored the rectifying
+    // homographies entirely. rectification.cpp's main() now persists this
+    // file for exactly this reason.
+    std::string rectPath = "results/scene" + sceneId + "/rectification/" + rectTag;
+    std::string projFile = rectPath + "/proj_" + viewL + "_" + viewR + ".yaml";
 
-    DTUDataLoader loader(dataPath.string());
-    CalibData orig_calib;
-    loader.loadLeftExtrinsics(orig_calib, effLeftId, effRightId);
-    calib.R0 = orig_calib.R0;
-    calib.t0 = orig_calib.t0;
+    cv::Mat Q, P1, P2;
+    {
+        cv::FileStorage fsIn(projFile, cv::FileStorage::READ);
+        if (!fsIn.isOpened())
+            throw std::runtime_error("[depth] Missing rectification output — run rectification "
+                                      "first (tag=" + rectTag + "): " + projFile);
+        fsIn["Q"]  >> Q;
+        fsIn["P1"] >> P1;
+        fsIn["P2"] >> P2;
+        fsIn.release();
+    }
 
-     // Load Q from saved rectification (simplified: try to get from calibration)
-    
-    double f  = calib.K0.at<double>(0,0);
-    double cx = calib.K0.at<double>(0,2), cy = calib.K0.at<double>(1,2);
-    double B  = cv::norm(calib.t_rel);
-    // Q: Tx = -B (right camera is to the right, so Tx < 0)
-    // q32 = -1/Tx = 1/B → Z = f/W = f*B/d > 0 for d > 0.
-    cv::Mat Q = (cv::Mat_<double>(4,4)
-        << 1, 0, 0, -cx,
-           0, 1, 0, -cy,
-           0, 0, 0,   f,
-           0, 0, 1/B,  0);
+    cv::Mat mask1 = cv::imread(rectPath + "/mask_" + viewL + ".png", cv::IMREAD_GRAYSCALE);
+    cv::Mat mask2 = cv::imread(rectPath + "/mask_" + viewR + ".png", cv::IMREAD_GRAYSCALE);
 
-    PointCloud cloud = disparityToCloud(disp, Q, color);
+    PointCloud cloud;
+    if (!Q.empty()) {
+        // Calibrated pure-rotation rectification (OpenCV path): Q gives an
+        // exact, cheap closed-form triangulation.
+        std::cout << "[depth] using Q-based triangulation (tag=" << rectTag << ")\n";
+        cloud = disparityToCloud(disp, Q, color);
+    } else {
+        // General projective rectification (Loop-Zhang): no valid single Q,
+        // triangulate per-pixel via P1/P2 instead.
+        if (P1.empty() || P2.empty())
+            throw std::runtime_error("[depth] Neither Q nor P1/P2 available in " + projFile);
+        std::cout << "[depth] Q empty, using P1/P2 DLT triangulation (tag=" << rectTag << ")\n";
+        cloud = disparityToCloudViaP(disp, P1, P2, color, 1.0f, 1e4f, mask1, mask2);
+    }
 
     std::string save = "results/scene" + sceneId + "/pointcloud";
     fs::create_directories(save);
