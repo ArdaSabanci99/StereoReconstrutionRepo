@@ -14,7 +14,7 @@ echo "|------|--------------:|---------:|-------:|-----------:|---------:|------
 for R in 2 3 4; do
   L="$OUT/log_baseline_1_${R}.txt"
   ./build/pipeline "$DATA" 1 1 "$R" --scale "$SCALE" --ndisp "$NDISP" --window 5 \
-      --method sgm --light 0 --eval-ply "$GT" > "$L" 2>&1
+      --method sgm --eval-ply "$GT"  --test-gt-pose > "$L" 2>&1
   cp "results/scene1/matching/view_001_$(printf %03d $R)_disparity.png" \
      "$OUT/disp_baseline_1_${R}.png" 2>/dev/null
   BASE=$(grep -m1 "Baseline:" "$L" | grep -oE "[0-9.]+" | head -1)

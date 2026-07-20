@@ -20,7 +20,8 @@ for M in sad ssd ncc census sgm bm sgbm; do
   LOG="$OUT/log_${M}_${L}_${R}.txt"
   echo ">>> $M ($IMPL)"
   ./build/pipeline "$DATA" "$SCENE" "$L" "$R" --scale "$SCALE" --ndisp "$NDISP" \
-      --window "$WIN" --method "$M" --light 0 --eval-ply "$GT" > "$LOG" 2>&1
+      --window "$WIN" --method "$M"  --eval-ply "$GT" \
+      --zmax 700 --no-median  --min-disp 80 --manual-rect  > "$LOG" 2>&1
   # keep the disparity figure per method
   cp "results/scene${SCENE}/matching/view_$(printf %03d $L)_$(printf %03d $R)_disparity.png" \
      "$OUT/disp_${M}_${L}_${R}.png" 2>/dev/null
