@@ -28,7 +28,7 @@ Eigen::MatrixXf GaussianBlur::apply_gaussian2d(const Eigen::MatrixXf & img, int 
     
     // Apply horizontal blur
     Eigen::MatrixXf padded_img_horizontal(img.rows(), img.cols() + 2*radius);
-    padded_img_horizontal.block(0, radius, img.rows(), img.cols()) = img;  // copy the current image
+    padded_img_horizontal.block(0, radius, img.rows(), img.cols()) = img;
     for (int r = 0; r < radius; r++) {
         // Copying the nearest column
         padded_img_horizontal.col(r) = img.col(0);
@@ -45,7 +45,8 @@ Eigen::MatrixXf GaussianBlur::apply_gaussian2d(const Eigen::MatrixXf & img, int 
     // Apply vertical blur
     Eigen::MatrixXf padded_img_vertical(img.rows() + 2*radius, img.cols());
 
-    // Copy the horizontally blurred image -> adding vertical blur = 2D Gaussian blur
+    // Using separable convolution: first horizontal, then vertical
+        // Copy the horizontally blurred image into the center of the padded vertical image
     padded_img_vertical.block(radius, 0, img.rows(), img.cols()) = blurred_img_horizontal;
     for (int r = 0; r < radius; r++) {
         // Copying the nearest row

@@ -5,15 +5,12 @@
 #include <numeric>
 #include <iostream>
 
-// Constants for the free (stateless) helper functions below — passed in explicitly by their
-// callers rather than read off SIFT, so bin_orientation_votes/compute_descriptor stay testable
-// independent of a SIFT instance.
+
 constexpr int ORIENT_BIN_NUMS = 36;              // Number of bins in the orientation histogram
 constexpr int DESC_SUBREGION_SIZE = 4;           // Descriptor is 4x4 subregions
 constexpr int DESC_ORIENTATION_BINS = 8;         // Descriptor has 8 orientation bins per subregion
 constexpr float DESC_MAGNITUDE_THRESHOLD = 0.2f; // Threshold for descriptor magnitude clipping
 
-// ─────────────────────────────────────────────────────────────────────────────
 void SIFT::set_number_of_octaves(const Eigen::MatrixXf & img) {
     int image_height = img.rows();
     int image_width = img.cols();
@@ -23,11 +20,10 @@ void SIFT::set_number_of_octaves(const Eigen::MatrixXf & img) {
     std::cout << "[SIFT] Number of octaves: " << m_octaves_num << std::endl;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 int get_kernel_size(double sigma) {
     return 2 * std::ceil(3 * sigma) + 1;  // Standard deviation rule: 3*sigma on each side + 1 for the center pixel
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 Eigen::MatrixXf downsample(const Eigen::MatrixXf & img) {
     int rows = img.rows() / 2;
     int cols = img.cols() / 2;
@@ -42,7 +38,6 @@ Eigen::MatrixXf downsample(const Eigen::MatrixXf & img) {
 
     return img_down;
 }
-// ─────────────────────────────────────────────────────────────────────────────
 
 Eigen::MatrixXf upsample(const Eigen::MatrixXf & img) {
     int src_rows = img.rows();
@@ -87,16 +82,13 @@ Eigen::MatrixXf upsample(const Eigen::MatrixXf & img) {
 
     return img_up;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 void SIFT::build_scale_space(const Eigen::MatrixXf & up_img,
                             std::vector<double> & sigmas,
                             std::vector<std::vector<Eigen::MatrixXf>> & gauss_pyramid,
                             std::vector<std::vector<Eigen::MatrixXf>> & dog_pyramid) {
-    // 1. Base image for the first octave
-    // sigmas[i] = m_sigma * k^i -- a uniform geometric sequence starting at the base sigma, so
-    // every consecutive Gaussian pair (and therefore every DoG layer) is spaced by the same
-    // ratio k. (Previously sigmas[0] held the raw image's assumed un-blurred sigma, which broke
-    // that uniformity for the first DoG layer -- see notes/ discussion.)
+    
+    // 1. Computing blurring sigmas for each layer in the Gaussian pyramid
     sigmas[0] = m_sigma;
     double k = std::pow(2.0, 1.0/m_octave_layers_num);
     for (int i = 1; i < sigmas.size(); i++) {
@@ -107,9 +99,6 @@ void SIFT::build_scale_space(const Eigen::MatrixXf & up_img,
     for (double s : sigmas) std::cout << " " << s;
     std::cout << std::endl;
 
-    // Bring the raw upsampled image (assumed inherent blur INPUT_SIGMA*2) up to the pyramid's
-    // base sigma once, before it enters the per-octave loop -- matches OpenCV's
-    // createInitialImage, which blurs straight to the base sigma outside buildGaussianPyramid.
     double base_sigma_inc = std::sqrt(std::pow(sigmas[0], 2) - std::pow(INPUT_SIGMA * 2, 2));
     int base_kernel_size = get_kernel_size(base_sigma_inc);
     Eigen::MatrixXf octave_base_img = GaussianBlur::apply_gaussian2d(up_img, base_kernel_size, base_sigma_inc);
@@ -131,8 +120,6 @@ void SIFT::build_scale_space(const Eigen::MatrixXf & up_img,
             current_img = blurred_img;  // Update current image for the next layer
         }
         gauss_pyramid.push_back(octave_images);
-        // octave_images is index-aligned with sigmas, so the "double base sigma" level (k^s = 2)
-        // is at index m_octave_layers_num -- matches OpenCV's own next-octave-base pick.
         octave_base_img = downsample(octave_images[m_octave_layers_num]);
     }
 
@@ -146,7 +133,7 @@ void SIFT::build_scale_space(const Eigen::MatrixXf & up_img,
         dog_pyramid.push_back(octave_dog_images);
     }
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 bool is_extremum3d(const std::vector<Eigen::MatrixXf> & layers, int layer_idx, int x, int y) {
     float center = layers[layer_idx](x, y);
     bool is_min = true;
@@ -175,7 +162,7 @@ bool is_extremum3d(const std::vector<Eigen::MatrixXf> & layers, int layer_idx, i
 
     return is_max || is_min;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 Eigen::Vector3f compute_taylor_offset(const std::vector<Eigen::MatrixXf> & dog_octave, int layer_idx, int x, int y,
                                         Eigen::Vector3f & gradient, Eigen::Matrix3f & hessian) {
     // Wrapper for better readability
@@ -217,7 +204,7 @@ Eigen::Vector3f compute_taylor_offset(const std::vector<Eigen::MatrixXf> & dog_o
 
     return offset;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 bool SIFT::localize_keypoint(const std::vector<std::vector<Eigen::MatrixXf>> & dog_pyramid,
                               int octave_idx, int layer_idx, int x, int y,
                               std::tuple<int, float, float, float, float> & refined_keypoint) {
@@ -302,7 +289,7 @@ bool SIFT::localize_keypoint(const std::vector<std::vector<Eigen::MatrixXf>> & d
     m_reject_not_converged++;
     return false;  // Exceeded max iterations without converging
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<std::tuple<int, float, float, float, float>> SIFT::detect_keypoints(const std::vector<std::vector<Eigen::MatrixXf>> & dog_pyramid) {
     // 1. Find candidate points - local extrema in the DoG pyramid
         // check if the candidate is a local minima/maxima -> if yes, add to candidate points
@@ -352,7 +339,7 @@ std::vector<std::tuple<int, float, float, float, float>> SIFT::detect_keypoints(
                << " edge_response=" << m_reject_edge_response << std::endl;
     return refined_keypoints;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 std::pair<double, double> compute_pixel_gradient(const Eigen::MatrixXf & img, int x, int y) {
     double L_x = (img(x + 1, y) - img(x - 1, y)) / 2.0;
     double L_y = (img(x, y + 1) - img(x, y - 1)) / 2.0;
@@ -362,7 +349,7 @@ std::pair<double, double> compute_pixel_gradient(const Eigen::MatrixXf & img, in
 
     return std::make_pair(magnitude, angle);
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<std::tuple<int, int, double, double>> get_neighbourhood_regions_with_gradient(const Eigen::MatrixXf & img, int x_center, int y_center, int radius) {
     std::vector<std::tuple<int, int, double, double>> neighbourhood;
     for (int dx = -radius; dx <= radius; dx++) {
@@ -380,7 +367,7 @@ std::vector<std::tuple<int, int, double, double>> get_neighbourhood_regions_with
 
     return neighbourhood;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<float> bin_orientation_votes(const std::vector<std::tuple<int, int, double, double>> & neighbours_with_grads, double weight_sigma, int num_bins) {
     std::vector<float> histogram(num_bins, 0.0f);
     const double bin_width = 360.0 / num_bins;
@@ -401,7 +388,7 @@ std::vector<float> bin_orientation_votes(const std::vector<std::tuple<int, int, 
 
     return histogram;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<float> refine_orientation_peaks(const std::vector<float> & histogram, const std::vector<int> & local_max_args) {
     std::vector<float> refined_orientations;
     refined_orientations.reserve(local_max_args.size());
@@ -424,7 +411,7 @@ std::vector<float> refine_orientation_peaks(const std::vector<float> & histogram
     }
     return refined_orientations;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<std::vector<float>> SIFT::build_orientation_histograms(const std::vector<std::tuple<int, float, float, float>> & refined_keypoints, std::vector<std::vector<Eigen::MatrixXf>> & gauss_pyramid, const std::vector<double> & sigmas) {
     std::vector<std::vector<float>> keypoint_orientations(refined_keypoints.size());
 
@@ -488,7 +475,7 @@ std::vector<std::vector<float>> SIFT::build_orientation_histograms(const std::ve
 
     return keypoint_orientations;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<float> compute_descriptor(const Eigen::MatrixXf & gauss_img, float x_kp, float y_kp, double sigma, float orientation_deg,
                                        int subregion_size, int orientation_bins, float magnitude_threshold) {
     std::vector<float> descriptor(subregion_size * subregion_size * orientation_bins, 0.0f);
@@ -584,7 +571,7 @@ std::vector<float> compute_descriptor(const Eigen::MatrixXf & gauss_img, float x
 
     return descriptor;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<Keypoint> SIFT::generate_descriptors(const std::vector<std::tuple<int, float, float, float>> & refined_keypoints,
                                                   const std::vector<std::vector<Eigen::MatrixXf>> & gauss_pyramid,
                                                   const std::vector<double> & sigmas,
@@ -616,7 +603,7 @@ std::vector<Keypoint> SIFT::generate_descriptors(const std::vector<std::tuple<in
 
     return keypoints;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
 std::vector<Keypoint> SIFT::detect_features(const Eigen::MatrixXf & img) {
     // 1. Build scale space
         // Get Gaussian and DoG pyramid
@@ -669,5 +656,3 @@ std::vector<Keypoint> SIFT::detect_features(const Eigen::MatrixXf & img) {
 
     return keypoints;
 }
-// ─────────────────────────────────────────────────────────────────────────────
-

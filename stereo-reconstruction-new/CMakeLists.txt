@@ -94,17 +94,13 @@ add_library(sparse_matching_lib STATIC
 add_stereo_exe(sparse_matching src/sparse_matching.cpp)
 target_link_libraries(sparse_matching sparse_matching_lib)
 
-# ── 1b. Sparse matching vs. DTU ground truth (backend/parameter study runner) ─
+# ── Sparse matching testing ──────────────────────────────────────────────────
 add_stereo_exe(eval_sparse_matching
     tests/eval_sparse_matching.cpp
     src/sparse_matching.cpp
 )
 target_link_libraries(eval_sparse_matching sparse_matching_lib)
 target_compile_definitions(eval_sparse_matching PRIVATE PIPELINE_BUILD)
-
-# ── 1c. Camera-center / baseline geometry report (calibration-only, no images needed) ────────
-add_stereo_exe(camera_geometry_report tests/camera_geometry_report.cpp)
-target_link_libraries(camera_geometry_report sparse_matching_lib)
 
 # ── 2. Rectification ────────────────────────────────────────────────────────
 add_stereo_exe(rectification

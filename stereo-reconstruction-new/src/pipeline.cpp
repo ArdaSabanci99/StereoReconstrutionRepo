@@ -19,12 +19,13 @@ static void printUsage(const char* name) {
         << "Dense matching:\n"
         << "  --method    sad|ssd|ncc|census|sgm|bm|sgbm   (default: sgm)\n"
         << "  --window    <size>                             (default: 5)\n"
-        << "  --ndisp     <num_disparities>                  (default: 64)\n"
+        << "  --ndisp     <num_disparities>                  (default: 256 at scale 1.0)\n"
+        << "  --min-disp  <minimum_disparity>                (default: scaled from 80)\n"
         << "  --no-subpixel\n"
         << "  --no-lr\n"
         << "  --no-median\n"
         << "Pipeline:\n"
-        << "  --manual-rect                                  (Loop-Zhang closed-form rectification)\n"
+        << "  --manual-rect | --rect-manual                  (Loop-Zhang closed-form rectification)\n"
         << "  --scale     <factor>                           (default: 0.5)\n"
         << "  --test-gt-pose                                 (skip sparse matching, use DTU GT pose;\n"
         << "                                                   also derives GT F, so combines with\n"
@@ -46,8 +47,8 @@ static void printUsage(const char* name) {
 int main(int argc, char** argv) {
     if (argc < 5) { printUsage(argv[0]); return 1; }
 
-    fs::path dataPath(argv[1]);
-    const std::string sceneId(argv[2]);
+    fs::path data_path(argv[1]);
+    const std::string scene_id(argv[2]);
     const std::string viewL = padViewId(std::stoi(argv[3]));
     const std::string viewR = padViewId(std::stoi(argv[4]));
 
@@ -57,7 +58,7 @@ int main(int argc, char** argv) {
     double scale = 0.5;
 
     bool opencv_sm = false;
-    bool test_gt_pose   = false;
+    bool test_gt_pose = false;
     SparseMatchParams smParams;
 
     float max_depth_mm = 2000.0f;
@@ -66,50 +67,61 @@ int main(int argc, char** argv) {
 
     for (int i = 5; i < argc; ++i) {
         std::string a(argv[i]);
-        if      (a == "--manual-rect")                 manual_rect = true;
-        else if (a == "--no-subpixel")                 mp.subpixel = false;
-        else if (a == "--no-lr")                       mp.lr_check = false;
-        else if (a == "--no-median")                   mp.median_filter = false;
+        if (a == "--manual-rect" || a == "--rect-manual") manual_rect = true;
+        else if (a == "--no-subpixel") mp.subpixel = false;
+        else if (a == "--no-lr") mp.lr_check = false;
+        else if (a == "--no-median") mp.median_filter = false;
         else if (a == "--method" && i+1 < argc) {
             std::string m(argv[++i]);
-            if      (m == "sad")   mp.method = MatchMethod::MANUAL_SAD;
-            else if (m == "ssd")   mp.method = MatchMethod::MANUAL_SSD;
-            else if (m == "ncc")   mp.method = MatchMethod::MANUAL_NCC;
-            else if (m == "census")mp.method = MatchMethod::MANUAL_CENSUS;
-            else if (m == "sgm")   mp.method = MatchMethod::MANUAL_SGM;
-            else if (m == "bm")    mp.method = MatchMethod::OPENCV_BM;
-            else if (m == "sgbm")  mp.method = MatchMethod::OPENCV_SGBM;
+            if (m == "sad") mp.method = MatchMethod::MANUAL_SAD;
+            else if (m == "ssd") mp.method = MatchMethod::MANUAL_SSD;
+            else if (m == "ncc") mp.method = MatchMethod::MANUAL_NCC;
+            else if (m == "census") mp.method = MatchMethod::MANUAL_CENSUS;
+            else if (m == "sgm") mp.method = MatchMethod::MANUAL_SGM;
+            else if (m == "bm") mp.method = MatchMethod::OPENCV_BM;
+            else if (m == "sgbm") mp.method = MatchMethod::OPENCV_SGBM;
         }
 
-        else if (a == "--window"       && i+1 < argc) mp.window_size               = std::stoi(argv[++i]);
-        else if (a == "--ndisp"        && i+1 < argc) mp.num_disparities           = std::stoi(argv[++i]);
-        else if (a == "--scale"        && i+1 < argc) scale                        = std::stod(argv[++i]);
-        else if (a == "--sm-opencv")                    opencv_sm                   = true;
-        else if (a == "--sm-custom-sift")              smParams.use_custom_sift    = true;
-        else if (a == "--test-gt-pose")                        test_gt_pose                     = true;
-        else if (a == "--sm-features"  && i+1 < argc) smParams.sift_features        = std::stoi(argv[++i]);
-        else if (a == "--sm-ratio"     && i+1 < argc) smParams.ratio_threshold      = std::stof(argv[++i]);
-        else if (a == "--sm-ransac"    && i+1 < argc) smParams.ransac_threshold     = std::stod(argv[++i]);
+        else if (a == "--window" && i+1 < argc) mp.window_size = std::stoi(argv[++i]);
+        else if (a == "--ndisp" && i+1 < argc) mp.num_disparities = std::stoi(argv[++i]);
+        else if (a == "--min-disp" && i+1 < argc) mp.min_disparity = std::stoi(argv[++i]);
+        else if (a == "--scale" && i+1 < argc) scale = std::stod(argv[++i]);
+        else if (a == "--sm-opencv") opencv_sm = true;
+        else if (a == "--sm-custom-sift") smParams.use_custom_sift = true;
+        else if (a == "--test-gt-pose") test_gt_pose = true;
+        else if ((a == "--sm-features" || a == "--n-features") && i+1 < argc)
+            smParams.sift_features = std::stoi(argv[++i]);
+        else if (a == "--sm-ratio" && i+1 < argc) smParams.ratio_threshold = std::stof(argv[++i]);
+        else if (a == "--sm-ransac" && i+1 < argc) smParams.ransac_threshold = std::stod(argv[++i]);
 
-        else if (a == "--gt"      && i+1 < argc) gt_path            = argv[++i];
-        else if (a == "--eval-ply"&& i+1 < argc) eval_ply_path      = argv[++i];
-        else if (a == "--zmax"    && i+1 < argc) max_depth_mm       = std::stof(argv[++i]);
+        else if (a == "--gt" && i+1 < argc) gt_path = argv[++i];
+        else if (a == "--eval-ply" && i+1 < argc) eval_ply_path = argv[++i];
+        else if (a == "--zmax" && i+1 < argc) max_depth_mm = std::stof(argv[++i]);
+        else {
+            std::cerr << "Unknown or incomplete argument: " << a << "\n";
+            printUsage(argv[0]);
+            return 1;
+        }
     }
 
+    // Treat defaults or CLI overrides as full-resolution values and always
+    // scale them to the resolution used by the pipeline.
+    try {
+        configureDisparityRangeForScale(mp, scale);
+    } catch (const std::exception& e) {
+        std::cerr << "Invalid matching parameters: " << e.what() << "\n";
+        return 1;
+    }
     // ── 1. Load images & calibration ─────────────────────────────────────
-    std::cout << "\n=== Loading scene " << sceneId << " views "
+    std::cout << "\n=== Loading scene " << scene_id << " views "
               << viewL << "–" << viewR << " ===\n";
-    DTUDataLoader loader(dataPath.string());
+    DTUDataLoader loader(data_path.string());
     CalibData calib = loader.loadCalibIntrinsics(viewL, viewR);
-    cv::Mat imgL = loader.loadImage(sceneId, viewL);
-    cv::Mat imgR = loader.loadImage(sceneId, viewR);
+    cv::Mat imgL = loader.loadImage(scene_id, viewL);
+    cv::Mat imgR = loader.loadImage(scene_id, viewR);
     if (imgL.empty() || imgR.empty()) {
         std::cerr << "Could not load images.\n"; return 1;
     }
-
-    // Note: images stay at full calibration resolution here — sparse matching
-    // (below) runs on full-res images for the most accurate pose estimate.
-    // Downscaling happens right after, before rectification.
 
     // ── 2. Sparse matching / GT pose ─────────────────────────────────────────────
     std::cout << "\n=== Sparse Matching ===\n";
@@ -118,53 +130,32 @@ int main(int argc, char** argv) {
     } else if (opencv_sm) {
         std::cout << "[sparse matching]: Running OpenCV pipeline.\n";
     } else {
-        std::cout << "[sparse matching]: Runnign custom 8-point/RANSAC with "
+        std::cout << "[sparse matching]: Running custom 8-point/RANSAC with "
                   << (smParams.use_custom_sift ? "manual SIFT" : "OpenCV SIFT") << "\n";
     }
 
     if (test_gt_pose) {
         // Load GT relative pose directly from DTU calibration files — skip SIFT/RANSAC.
-        auto [K0_gt, R0_gt, t0_gt] = loader.decomposeProjectionMatrix(viewL);
-        auto [K1_gt, R1_gt, t1_gt] = loader.decomposeProjectionMatrix(viewR);
-        (void)K0_gt; (void)K1_gt;
-        calib.R_rel = R1_gt * R0_gt.t();
-        calib.t_rel = t1_gt - calib.R_rel * t0_gt;   // in mm (DTU world units)
-
-        // GT fundamental matrix, so --manual-rect (Loop-Zhang) can also be
-        // exercised against exact geometry instead of only the OpenCV path:
-        // X2 = R_rel*X1 + t_rel  =>  E = [t_rel]_x * R_rel  =>  F = K1^-T E K0^-1,
-        // same E<->F convention as sparse_matching.cpp (E = K1^T * F * K0).
-        // Must run before verifyLeftRightCameraOrder() below so the L/R swap
-        // (which also transposes F) sees a calib.F consistent with the
-        // pre-swap K0/K1/R_rel/t_rel it's being swapped alongside.
-        const cv::Mat& t = calib.t_rel;
-        cv::Mat tx = (cv::Mat_<double>(3, 3) <<
-                      0, -t.at<double>(2), t.at<double>(1),
-                      t.at<double>(2), 0, -t.at<double>(0),
-                      -t.at<double>(1), t.at<double>(0), 0);
-        cv::Mat E_gt = tx * calib.R_rel;
-        calib.F = calib.K1.inv().t() * E_gt * calib.K0.inv();
-
-        calib.verifyLeftRightCameraOrder();
+        loader.loadGTRelativePose(calib, viewL, viewR);
+        {
+            std::string sparse_path = "results/scene" + scene_id + "/sparse_matching";
+            fs::create_directories(sparse_path);
+            saveCalibData(calib, sparse_path + "/calib_debug_gt_" + viewL + "_" + viewR + ".yaml");
+        }
     } else {
-        SparseMatchResult sparse = computeSparseMatches(imgL, imgR, calib, opencv_sm, smParams);
+        SiftBackend sift_backend = (!opencv_sm && smParams.use_custom_sift) ? SiftBackend::Custom : SiftBackend::OpenCV;
+        FMatrixBackend fmatrix_backend = opencv_sm ? FMatrixBackend::OpenCVFundamental : FMatrixBackend::CustomRansac;
+        SparseMatchResult sparse = computeSparseMatches(imgL, imgR, calib, sift_backend, fmatrix_backend, smParams);
 
-        std::string sparse_path = "results/scene" + sceneId + "/sparse_matching";
+        std::string sparse_path = "results/scene" + scene_id + "/sparse_matching";
         fs::create_directories(sparse_path);
         saveCalibData(calib, sparse_path + "/calib_" + viewL + "_" + viewR + ".yaml");
-        saveSparseMatchInliers(sparse, sparse_path + "/inliers_" + viewL + "_" + viewR + ".yaml");
     }
 
     if (calib.swapped) {
         std::swap(imgL, imgR);
     }
 
-    // Downscale images and adjust everything derived from pixel coordinates
-    // consistently, now that sparse matching (full-res) is done.
-    // K is loaded at full calibration resolution. After resize by `scale`:
-    //   f  (K[0,0], K[1,1]) scales linearly with resolution.
-    //   cx (K[0,2]), cy (K[1,2]) shift by half a pixel at each pyramid level
-    //   (the +0.5 / -0.5 accounts for the pixel-centre convention across scales).
     if (scale != 1.0) {
         cv::resize(imgL, imgL, cv::Size(), scale, scale, cv::INTER_AREA);
         cv::resize(imgR, imgR, cv::Size(), scale, scale, cv::INTER_AREA);
@@ -173,10 +164,7 @@ int main(int argc, char** argv) {
             K->at<double>(0,2) = (K->at<double>(0,2)+0.5)*scale - 0.5;
             K->at<double>(1,2) = (K->at<double>(1,2)+0.5)*scale - 0.5;
         }
-        // F relates full-res pixel coords: x2^T F x1 = 0. Under x' = S x with
-        // S = diag(scale, scale, 1), the matrix that keeps the relation valid
-        // for the downscaled coords is F' = S^-T F S^-1 (needed by
-        // rectifyLoopZhang, which consumes calib.F directly).
+
         if (!calib.F.empty()) {
             for (int r = 0; r < 3; ++r)
                 for (int c = 0; c < 3; ++c) {
@@ -189,34 +177,53 @@ int main(int argc, char** argv) {
     }
 
     // ── 3. Rectification ─────────────────────────────────────────────────
-    std::string rectMethodName = !manual_rect ? "OpenCV" : "Loop-Zhang";
-    std::cout << "\n=== Rectification (" << rectMethodName << ") ===\n";
+    std::string rect_method_name = !manual_rect ? "OpenCV" : "Loop-Zhang";
+    std::cout << "\n=== Rectification (" << rect_method_name << ") ===\n";
     RectifyResult rect;
 
     rect = !manual_rect ? rectifyOpenCV(imgL, imgR, calib)
                         : rectifyLoopZhang(imgL, imgR, calib);
 
-    std::string rect_path = "results/scene" + sceneId + "/rectification";
+    std::string rect_path = "results/scene" + scene_id + "/rectification";
     fs::create_directories(rect_path);
     cv::imwrite(rect_path + "/view_" + viewL + ".png", rect.left_rect);
     cv::imwrite(rect_path + "/view_" + viewR + ".png", rect.right_rect);
+    cv::imwrite(rect_path + "/mask_" + viewL + ".png", rect.mask1);
+    cv::imwrite(rect_path + "/mask_" + viewR + ".png", rect.mask2);
 
-    // Side-by-side with epipolar lines
-    cv::Mat sbs; cv::hconcat(rect.left_rect, rect.right_rect, sbs);
-    for (int y = 0; y < sbs.rows; y += 40)
-        cv::line(sbs, {0,y}, {sbs.cols,y}, {0,255,0}, 1);
-    cv::imwrite(rect_path + "/epipolar_lines.png", sbs);
+    cv::Mat side;
+    cv::hconcat(rect.left_rect, rect.right_rect, side);
+
+    for (int y = 0; y < side.rows; y += 40) {
+        const bool validInLeft =
+            cv::countNonZero(rect.mask1.row(y)) > 0;
+
+        const bool validInRight =
+            cv::countNonZero(rect.mask2.row(y)) > 0;
+
+        if (validInLeft && validInRight) {
+            cv::line(side,cv::Point(0, y), cv::Point(side.cols - 1, y), cv::Scalar(0, 255, 0), 1);
+        }
+    }
+    cv::imwrite(rect_path + "/epipolar_lines_" + viewL + "_" + viewR + ".png", side);
+
 
     // ── 4. Dense matching ─────────────────────────────────────────────────
     std::cout << "\n=== Dense Matching (ndisp=" << mp.num_disparities
               << " window=" << mp.window_size << ") ===\n";
     cv::Mat disp = computeDisparity(rect.left_rect, rect.right_rect, mp, rect.mask1, rect.mask2);
 
-    cv::Mat disp_vis;
-    cv::normalize(disp, disp_vis, 0, 255, cv::NORM_MINMAX, CV_8U);
+    cv::Mat disp_vis(disp.size(), CV_8U, cv::Scalar(0));
+    const float visMin = static_cast<float>(mp.min_disparity);
+    const float visMax = static_cast<float>(mp.min_disparity + mp.num_disparities);
+    const cv::Mat validDisp = disp >= visMin;
+    disp.convertTo(disp_vis, CV_8U, 255.0f / (visMax - visMin),
+                   -255.0f * visMin / (visMax - visMin));
+    disp_vis.setTo(0, ~validDisp);
     cv::applyColorMap(disp_vis, disp_vis, cv::COLORMAP_JET);
+    disp_vis.setTo(cv::Scalar(0, 0, 0), ~validDisp);
 
-    std::string match_path = "results/scene" + sceneId + "/matching";
+    std::string match_path = "results/scene" + scene_id + "/matching";
     fs::create_directories(match_path);
     cv::imwrite(match_path + "/view_" + viewL + "_" + viewR + "_disparity.png", disp_vis);
     saveDisparity(disp, match_path + "/view_" + viewL + "_" + viewR + "_raw.png");
@@ -229,16 +236,6 @@ int main(int argc, char** argv) {
         // Loop-Zhang produces a general projective warp, not a calibrated
         // rectified camera pair — there is no valid Q matrix (see rectification.cpp).
         // Triangulate per-pixel via the rectified projection matrices instead.
-        std::vector<cv::Point2f> pts1, pts2;
-        std::vector<cv::Vec3b> colors;
-        for (int y = 0; y < disp.rows; ++y)
-            for (int x = 0; x < disp.cols; ++x) {
-                float d = disp.at<float>(y, x);
-                if (d < min_disp) continue;
-                pts1.emplace_back((float)x, (float)y);
-                pts2.emplace_back((float)x - d, (float)y);
-                colors.push_back(rect.left_rect.at<cv::Vec3b>(y, x));
-            }
         cloud = disparityToCloudViaP(disp, rect.P1, rect.P2, rect.left_rect,
                                   min_disp, max_depth_mm, rect.mask1, rect.mask2);
     } else {
@@ -263,7 +260,7 @@ int main(int argc, char** argv) {
                   << " points to world space.\n";
     }
 
-    std::string cloud_path = "results/scene" + sceneId + "/pointcloud";
+    std::string cloud_path = "results/scene" + scene_id + "/pointcloud";
     fs::create_directories(cloud_path);
     savePointCloud(cloud, cloud_path + "/views_" + viewL + "_" + viewR + ".ply");
     savePointCloudOFF(cloud, cloud_path + "/views_" + viewL + "_" + viewR + ".off");
@@ -276,8 +273,8 @@ int main(int argc, char** argv) {
             std::cerr << "[pipeline] Could not load reference cloud: " << eval_ply_path << "\n";
         } else {
             DtuEvalResult er = evaluateCloudVsReference(cloud.points, gt);
-            printDtuEval(er, "scene" + sceneId + " views " + viewL + "-" + viewR
-                             + " (" + rectMethodName + ")");
+            printDtuEval(er, "scene" + scene_id + " views " + viewL + "-" + viewR
+                             + " (" + rect_method_name + ")");
         }
     }
 
@@ -291,11 +288,11 @@ int main(int argc, char** argv) {
             if (disp_eval.size() != gt.size())
                 cv::resize(disp_eval, disp_eval, gt.size(), 0, 0, cv::INTER_NEAREST);
             EvalResult r = evaluateDisparity(disp_eval, gt);
-            printEvalResult(r, "Scene " + sceneId + " views " + viewL + "-" + viewR);
+            printEvalResult(r, "Scene " + scene_id + " views " + viewL + "-" + viewR);
         }
     }
 
     std::cout << "\n=== Pipeline complete. Results in results/scene"
-              << sceneId << "/ ===\n";
+              << scene_id << "/ ===\n";
     return 0;
 }

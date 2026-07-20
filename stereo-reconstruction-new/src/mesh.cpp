@@ -11,25 +11,31 @@
 
 namespace fs = std::filesystem;
 
-// ── Internal mesh struct ──────────────────────────────────────────────────
 
+/**
+ * @brief Mesh structure containing vertices, colors, and faces for 3D representation. 
+ */
 struct Mesh {
     std::vector<cv::Point3f> verts;
     std::vector<cv::Vec3b>   colors;
-    std::vector<cv::Vec3i>   faces;  // 0-based triangle indices
+    std::vector<cv::Vec3i>   faces;
 };
 
-// ── G1: Depth map triangulation ──────────────────────────────────────────
-//
-// Each 2×2 pixel block of valid depth values yields 2 triangles:
-//
-//   (y,x) --- (y,x+1)
-//     |  \        |
-//     |    \      |
-//   (y+1,x)-(y+1,x+1)
-//
-// Triangles with depth discontinuity > threshold are skipped.
-
+/**
+ * @brief Triangulates a depth map into a mesh, optionally using color information.
+ *        Each 2×2 pixel block of valid depth values yields 2 triangles:
+ * 
+ *        (y,x) --- (y,x+1)
+ *          |  \        |
+ *          |    \      |
+ *        (y+1,x)-(y+1,x+1)
+ * 
+ * @param[in] depth Depth map 
+ * @param[in] calib Calibration data
+ * @param[in] color Colour image (optional, must match depth size)
+ * @param[in] depth_jump_thresh Threshold for depth discontinuity to avoid creating triangles across large depth jumps.
+ * @return Mesh 
+ */
 Mesh triangulateDepthMap(const cv::Mat& depth,
                           const CalibData& calib,
                           const cv::Mat& color,
@@ -101,12 +107,16 @@ Mesh triangulateDepthMap(const cv::Mat& depth,
     return mesh;
 }
 
-// ── G2: Save as OBJ ──────────────────────────────────────────────────────
-//
-// Vertices: "v X Y Z"
-// Per-vertex color as comment (MeshLab extension): "v X Y Z R G B" where R,G,B in [0,1]
-// Faces:    "f v1 v2 v3"  (1-indexed)
 
+/**
+ * @brief Save a mesh to an OBJ file, optionally including vertex colors.
+ *        Vertices: "v X Y Z"
+ *        Per-vertex color as comment (MeshLab extension): "v X Y Z R G B" where R,G,B in [0,1]
+ *        Faces:    "f v1 v2 v3"  (1-indexed)
+ * 
+ * @param mesh 
+ * @param path 
+ */
 void saveMeshOBJ(const Mesh& mesh, const std::string& path) {
     std::ofstream f(path);
     if (!f) { std::cerr << "[mesh] Cannot open " << path << "\n"; return; }
@@ -130,11 +140,15 @@ void saveMeshOBJ(const Mesh& mesh, const std::string& path) {
               << mesh.faces.size() << " faces) → " << path << "\n";
 }
 
-// ── G3: Laplacian smoothing ───────────────────────────────────────────────
-//
-// v_i_new = (1 - lambda) * v_i + lambda * mean(neighbors(v_i))
-// Applied `iters` times. Only geometry (verts) is modified; colors stay fixed.
-
+/**
+ * @brief Laplacian smoothing of a mesh. 
+ *        Each vertex is moved towards the mean of its neighbors.
+ *        v_i_new = (1 - lambda) * v_i + lambda * mean(neighbors(v_i)) 
+ * 
+ * @param mesh Mesh to smooth. Only geometry (verts) is modified; colors stay fixed.
+ * @param iters Applies the smoothing operation this many times.
+ * @param lambda Controls the strength of smoothing.
+ */
 void laplacianSmooth(Mesh& mesh, int iters, float lambda = 0.5f) {
     if (iters <= 0) return;
     const int N = (int)mesh.verts.size();
@@ -163,41 +177,6 @@ void laplacianSmooth(Mesh& mesh, int iters, float lambda = 0.5f) {
               << " iters, lambda=" << lambda << ")\n";
 }
 
-// ── G4: Poisson surface reconstruction (requires Open3D) ─────────────────
-#ifdef HAVE_OPEN3D
-#include <open3d/Open3D.h>
-
-void poissonReconstruct(const PointCloud& cloud, const std::string& out_path, int depth_param = 9) {
-    auto pcd = std::make_shared<open3d::geometry::PointCloud>();
-    for (const auto& p : cloud.points)
-        pcd->points_.emplace_back(p.x(), p.y(), p.z());
-    if (!cloud.normals.empty())
-        for (const auto& n : cloud.normals)
-            pcd->normals_.emplace_back(n.x(), n.y(), n.z());
-
-    if (pcd->normals_.empty()) {
-        pcd->EstimateNormals(
-            open3d::geometry::KDTreeSearchParamHybrid(0.1, 30));
-        pcd->OrientNormalsConsistentTangentPlane(100);
-    }
-
-    auto [mesh_ptr, densities] =
-        open3d::geometry::TriangleMesh::CreateFromPointCloudPoisson(*pcd, depth_param);
-
-    // Trim low-density artefacts (bottom 1% quantile)
-    std::vector<double> dens(densities.begin(), densities.end());
-    std::sort(dens.begin(), dens.end());
-    double threshold = dens[(size_t)(dens.size() * 0.01)];
-    std::vector<bool> mask(densities.size());
-    for (size_t i = 0; i < densities.size(); ++i)
-        mask[i] = densities[i] < threshold;
-    mesh_ptr->RemoveVerticesByMask(mask);
-
-    open3d::io::WriteTriangleMesh(out_path, *mesh_ptr);
-    std::cout << "[mesh] Poisson mesh saved to " << out_path << "\n";
-}
-#endif  // HAVE_OPEN3D
-
 // ── Main ──────────────────────────────────────────────────────────────────
 //
 // Usage:
@@ -224,19 +203,18 @@ int main(int argc, char** argv) {
     const std::string viewLeftId  = padViewId(std::stoi(argv[3]));
     const std::string viewRightId = padViewId(std::stoi(argv[4]));
 
-    std::string lightId    = "0";
-    int         smooth_n   = 0;
-    float       lambda     = 0.5f;
-    float       jump_thr   = 0.05f;
-    std::string out_dir    = "results/scene" + sceneId + "/mesh";
+    std::string lightId = "0";
+    int smooth_n = 0;
+    float lambda = 0.5f;
+    float jump_thr = 0.05f;
+    std::string out_dir = "results/scene" + sceneId + "/mesh";
 
     for (int i = 5; i < argc; ++i) {
         std::string a(argv[i]);
-        if      (a == "--light"  && i+1 < argc) lightId   = argv[++i];
-        else if (a == "--smooth" && i+1 < argc) smooth_n  = std::stoi(argv[++i]);
-        else if (a == "--lambda" && i+1 < argc) lambda    = std::stof(argv[++i]);
-        else if (a == "--jump"   && i+1 < argc) jump_thr  = std::stof(argv[++i]);
-        else if (a == "--out"    && i+1 < argc) out_dir   = argv[++i];
+        if (a == "--smooth" && i+1 < argc) smooth_n  = std::stoi(argv[++i]);
+        else if (a == "--lambda" && i+1 < argc) lambda = std::stof(argv[++i]);
+        else if (a == "--jump" && i+1 < argc) jump_thr = std::stof(argv[++i]);
+        else if (a == "--out" && i+1 < argc) out_dir = argv[++i];
     }
 
     // Load calibration
@@ -244,6 +222,10 @@ int main(int argc, char** argv) {
     std::string calib_path = "results/scene" + sceneId + "/sparse_matching/calib_"
                          + viewLeftId + "_" + viewRightId + ".yaml";
     CalibData calib = loadCalibData(calib_path);
+    if (!calib.hasIntrinsics()) {
+        std::cerr << "[mesh]: Missing intrinsics — run sparse_matching first.\n";
+        return 1;
+    }
 
     // Load pre-computed disparity saved by pipeline/matching stage
     std::string disp_path = "results/scene" + sceneId + "/matching/view_"

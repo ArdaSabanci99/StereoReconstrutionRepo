@@ -8,12 +8,7 @@
 #include <cmath>
 #include <limits>
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Static 3-D KD-tree for exact nearest-neighbour distance queries.
-// Build once over a reference cloud, then query the squared distance from an
-// arbitrary point to its nearest reference point. O(N log N) build, ~O(log N)
-// per query in practice.
-// ─────────────────────────────────────────────────────────────────────────────
+
 namespace {
 
 struct KDTree3 {
@@ -99,11 +94,8 @@ double fractionWithin(const std::vector<double>& v, double tau) {
     return 100.0 * c / v.size();
 }
 
-} // namespace
+}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PLY loader (x,y,z only)
-// ─────────────────────────────────────────────────────────────────────────────
 std::vector<Eigen::Vector3f> loadPlyXYZ(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) { std::cerr << "[dtu_eval] cannot open " << path << "\n";
@@ -198,9 +190,6 @@ std::vector<Eigen::Vector3f> loadPlyXYZ(const std::string& path) {
     return out;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Evaluation
-// ─────────────────────────────────────────────────────────────────────────────
 static void bbox(const std::vector<Eigen::Vector3f>& p,
                  Eigen::Vector3f& lo, Eigen::Vector3f& hi) {
     lo.setConstant( std::numeric_limits<float>::max());
@@ -276,9 +265,6 @@ void printDtuEval(const DtuEvalResult& r, const std::string& label) {
     o << "    chamfer@" << r.maxdist << "mm   " << r.chamfer << "\n";
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Standalone tool
-// ─────────────────────────────────────────────────────────────────────────────
 #ifndef PIPELINE_BUILD
 int main(int argc, char** argv) {
     if (argc < 3) {

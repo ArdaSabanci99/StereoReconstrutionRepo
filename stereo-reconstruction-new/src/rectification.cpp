@@ -1,74 +1,26 @@
 #include "rectification.h"
 #include "sparse_matching.h"
 #include "DataLoader.h"
+#include "utils.h"
 #include "Eigen.h"
 #include <iostream>
 #include <cmath>
-#include <array>
 #include <limits>
+#include <stdexcept>
+#include <array>
 
-// ─────────────────────────────────────────────────────────────────────────────
-// NOTE: RectifyResult (rectification.h) must have these two fields added --
-// they are new in this version and are not yet declared in the header:
-//
-//     cv::Mat mask1, mask2;  // CV_8U, 255 = valid content, 0 = black warp padding
-//
-// ─────────────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// OpenCV baseline
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// OpenCV calibrated rectification
+// -----------------------------------------------------------------------------
 
-// Tilt/valid-fraction fit diagnostic for this (OpenCV) rectification path --
-// kept independent (no Eigen) so this path stays self-contained.
-static cv::Point2d warpPointCv(const cv::Mat& H, double x, double y) {
-    cv::Mat p = (cv::Mat_<double>(3, 1) << x, y, 1.0);
-    cv::Mat q = H * p;
-    double w = q.at<double>(2, 0);
-    return { q.at<double>(0, 0) / w, q.at<double>(1, 0) / w };
-}
-
-static void logRectificationFit(const cv::Mat& H_left, const cv::Mat& H_right, int W, int Hh) {
-    auto fit = [&](const cv::Mat& H) {
-        double xs[4] = { 0.0, (double)W, (double)W, 0.0 };
-        double ys[4] = { 0.0, 0.0,       (double)Hh, (double)Hh };
-        cv::Point2d q[4];
-        for (int i = 0; i < 4; ++i) q[i] = warpPointCv(H, xs[i], ys[i]);
-        double area2 = 0.0;
-        for (int i = 0; i < 4; ++i) {
-            const auto& p = q[i]; const auto& n = q[(i + 1) % 4];
-            area2 += p.x * n.y - n.x * p.y;
-        }
-        double frac = std::abs(area2) / 2.0 / (double(W) * double(Hh));
-        double tilt = std::atan2(q[1].y - q[0].y, q[1].x - q[0].x) * 180.0 / CV_PI;
-        return std::make_pair(tilt, frac);
-    };
-    auto [tilt1, frac1] = fit(H_left);
-    auto [tilt2, frac2] = fit(H_right);
-    std::cout << "[rectify] canvas fit — left: tilt=" << tilt1
-              << "deg valid=" << (frac1 * 100.0) << "% | right: tilt=" << tilt2
-              << "deg valid=" << (frac2 * 100.0) << "%\n";
-}
-
-// Rasterize a homography's warped W x H quad into a binary validity mask:
-// 255 where a pixel in the (W,H) output canvas is covered by actual warped
-// source content, 0 where it's black warp padding. Used by matching.cpp to
-// invalidate disparity computed over padding (see the padding/SGM-noise
-// discussion this was added for).
-static cv::Mat rasterizeQuadMaskCv(const cv::Mat& H, int W, int Hh) {
-    double xs[4] = { 0.0, (double)W, (double)W, 0.0 };
-    double ys[4] = { 0.0, 0.0,       (double)Hh, (double)Hh };
-    std::vector<cv::Point> poly;
-    poly.reserve(4);
-    for (int i = 0; i < 4; ++i) {
-        cv::Point2d p = warpPointCv(H, xs[i], ys[i]);
-        poly.emplace_back(cvRound(p.x), cvRound(p.y));
-    }
-    cv::Mat mask = cv::Mat::zeros(Hh, W, CV_8U);
-    cv::fillConvexPoly(mask, poly, cv::Scalar(255));
-    return mask;
-}
-
+/**
+ * @brief OpenCV calibrated rectification implementation.
+ *
+ * The remapping masks are produced from an all-white source image with the
+ * same maps as the photographs. A zero mask value therefore means that the
+ * output pixel came from outside the original image.
+ */
 RectifyResult rectifyOpenCV(const cv::Mat& left, const cv::Mat& right,
                               const CalibData& calib) {
     cv::Size sz(left.cols, left.rows);
@@ -83,101 +35,75 @@ RectifyResult rectifyOpenCV(const cv::Mat& left, const cv::Mat& right,
     cv::initUndistortRectifyMap(calib.K0, D0, R0, P1, sz, CV_32FC1, m0x, m0y);
     cv::initUndistortRectifyMap(calib.K1, D1, R1, P2, sz, CV_32FC1, m1x, m1y);
 
-    // Forward (original-pixel -> rectified-pixel) homography implied by each
-    // camera's rectifying rotation, H = newK * R * K^-1 -- same quantity
-    // warpPerspective uses in the Loop-Zhang path, just derived from
-    // stereoRectify's R/newK instead of an explicit projective homography.
-    cv::Mat newK0 = P1(cv::Rect(0, 0, 3, 3));
-    cv::Mat newK1 = P2(cv::Rect(0, 0, 3, 3));
-    cv::Mat H_left  = newK0 * R0 * calib.K0.inv();
-    cv::Mat H_right = newK1 * R1 * calib.K1.inv();
-    logRectificationFit(H_left, H_right, sz.width, sz.height);
-
     RectifyResult res;
-    cv::remap(left,  res.left_rect,  m0x, m0y, cv::INTER_LINEAR);
-    cv::remap(right, res.right_rect, m1x, m1y, cv::INTER_LINEAR);
-    res.Q       = Q;
-    res.P1      = P1;
-    res.P2      = P2;
+    cv::remap(left,  res.left_rect,  m0x, m0y, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+    cv::remap(right, res.right_rect, m1x, m1y, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+
+    // Build masks with the exact same sampling maps as the images.
+    cv::Mat sourceMask(sz, CV_8U, cv::Scalar(255));
+    cv::remap(sourceMask, res.mask1, m0x, m0y, cv::INTER_NEAREST,
+              cv::BORDER_CONSTANT, cv::Scalar(0));
+    cv::remap(sourceMask, res.mask2, m1x, m1y, cv::INTER_NEAREST,
+              cv::BORDER_CONSTANT, cv::Scalar(0));
+
+    res.Q = Q;
+    res.P1 = P1;
+    res.P2 = P2;
     res.R0_rect = R0;
 
-    // OpenCV's alpha=-1 already crops/zooms to minimize black padding, but
-    // there can still be a residual sliver at the extreme edges; derive the
-    // mask the same way as the Loop-Zhang path so matching.cpp has a single
-    // consistent mask contract regardless of which rectifier ran.
-    res.mask1 = rasterizeQuadMaskCv(H_left,  sz.width, sz.height);
-    res.mask2 = rasterizeQuadMaskCv(H_right, sz.width, sz.height);
+    // cv::Mat K1_rect = P1(cv::Rect(0, 0, 3, 3));
+    // cv::Mat K2_rect = P2(cv::Rect(0, 0, 3, 3));
 
+    // res.H1 = K1_rect * R0 * calib.K0.inv();
+    // res.H2 = K2_rect * R1 * calib.K1.inv();
+    
     std::cout << "[rectification] OpenCV done.\n";
+    
     return res;
 }
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 1. Conversion Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Helper to convert Eigen::Matrix3d to cv::Mat
-static cv::Mat eigenToCv(const Eigen::Matrix3d& src) {
-    cv::Mat dst(3, 3, CV_64F);
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-            dst.at<double>(i, j) = src(i, j);
-    return dst;
-}
-
-// Helper to convert a 3x4 Eigen matrix (projection matrix) to cv::Mat
-static cv::Mat eigenToCv34(const Eigen::Matrix<double, 3, 4>& src) {
-    cv::Mat dst(3, 4, CV_64F);
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 4; ++j)
-            dst.at<double>(i, j) = src(i, j);
-    return dst;
-}
-
-// Helpers to convert cv::Mat (CV_64F) intrinsics/extrinsics to Eigen
-static Eigen::Matrix3d cvToEigen3x3(const cv::Mat& src) {
-    Eigen::Matrix3d dst;
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-            dst(i, j) = src.at<double>(i, j);
-    return dst;
-}
-
-static Eigen::Vector3d cvToEigenVec3(const cv::Mat& src) {
-    return Eigen::Vector3d(src.at<double>(0), src.at<double>(1), src.at<double>(2));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 2. Core Math Engine
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Compute the epipole (null space of the given matrix)
+/**
+ * @brief Find the epipole as the null vector of the fundamental matrix.
+ *
+ * @param[in] Fundamental matrix F.
+ * @return Epipole in homogeneous coordinates (3-vector).
+ */
 static Eigen::Vector3d computeEpipole(const Eigen::Matrix3d& F) {
     Eigen::JacobiSVD<Eigen::Matrix3d> svd(F, Eigen::ComputeFullV);
-    Eigen::Vector3d e = svd.matrixV().col(2);
-    return e / e.z(); // Normalize to homogeneous coordinates
+    Eigen::Vector3d epipole = svd.matrixV().col(2);
+
+    if (std::abs(epipole.z()) < 1e-12 || !epipole.allFinite())
+        throw std::runtime_error("Cannot normalize the Loop-Zhang epipole");
+    
+    return epipole / epipole.z();
 }
 
-// Skew-symmetric cross-product matrix: skewSymmetric(v) * x == v.cross(x)
+/** 
+ * @brief Return the matrix that computes a cross product with v. 
+ * 
+ * @param[in] v 3D vector
+ * @return 3x3 skew-symmetric matrix S such that S * w = v x w for any 3D vector w.
+ */
 static Eigen::Matrix3d skewSymmetric(const Eigen::Vector3d& v) {
     Eigen::Matrix3d S;
     S <<      0, -v.z(),  v.y(),
           v.z(),      0, -v.x(),
          -v.y(),  v.x(),      0;
+    
     return S;
 }
 
-// Warp a single 2D point through a 3x3 homography
+/** @brief Transform one image point and divide by its homogeneous scale. */
 static Eigen::Vector2d warpPointH(const Eigen::Matrix3d& H, double x, double y) {
     Eigen::Vector3d p(x, y, 1.0);
     Eigen::Vector3d q = H * p;
     return Eigen::Vector2d(q.x() / q.z(), q.y() / q.z());
 }
 
+/** @brief Axis-aligned bounds of a warped image. */
 struct BBox { double xmin, xmax, ymin, ymax; };
 
-// Bounding box of an image's 4 corners after warping through H
+/** @brief Compute the bounds of the four transformed image corners. */
 static BBox warpedBBox(const Eigen::Matrix3d& H, int W, int Hh) {
     BBox b{ 1e18, -1e18, 1e18, -1e18 };
     double xs[4] = { 0.0, (double)W, 0.0,       (double)W };
@@ -190,100 +116,97 @@ static BBox warpedBBox(const Eigen::Matrix3d& H, int W, int Hh) {
     return b;
 }
 
-// Warp the image's 4 corners through H, in polygon (not bbox-min/max) order,
-// so callers can measure the actual occupied quadrilateral rather than its bbox.
-static std::array<Eigen::Vector2d, 4> warpedQuad(const Eigen::Matrix3d& H, int W, int Hh) {
-    double xs[4] = { 0.0, (double)W, (double)W, 0.0 };
-    double ys[4] = { 0.0, 0.0,       (double)Hh, (double)Hh };
-    std::array<Eigen::Vector2d, 4> q;
-    for (int i = 0; i < 4; ++i) q[i] = warpPointH(H, xs[i], ys[i]);
-    return q;
+/**
+ * @brief Transform the four image corners in polygon order.
+ *
+ * The order is top-left, top-right, bottom-right, bottom-left.  Keeping the
+ * corners in this order is useful when a later step needs to inspect the
+ * actual warped quadrilateral rather than only its axis-aligned bounds.
+ */
+static std::array<Eigen::Vector2d, 4> warpedQuad(
+    const Eigen::Matrix3d& H, int W, int Hh) {
+    const double xs[4] = {0.0, static_cast<double>(W),
+                          static_cast<double>(W), 0.0};
+    const double ys[4] = {0.0, 0.0,
+                          static_cast<double>(Hh), static_cast<double>(Hh)};
+
+    std::array<Eigen::Vector2d, 4> quad;
+    for (int i = 0; i < 4; ++i)
+        quad[i] = warpPointH(H, xs[i], ys[i]);
+    return quad;
 }
 
-// Determinant of a homography's upper-left 2x2 (linear) block. A rectifying
-// homography that represents a physically valid camera view must be
-// orientation-preserving (positive determinant); a negative determinant
-// means the transform contains a reflection, which no rigid re-viewing of
-// the same scene can produce, and makes H*[K|0] an invalid camera matrix.
-static double linearDet2x2(const Eigen::Matrix3d& H) {
-    return H(0, 0) * H(1, 1) - H(0, 1) * H(1, 0);
-}
-
-// Rasterize a homography's warped W x H quad (Eigen version) into a binary
-// validity mask -- same contract as rasterizeQuadMaskCv above, used by the
-// Loop-Zhang path's finalizeRectification.
-static cv::Mat rasterizeQuadMask(const Eigen::Matrix3d& H, int W, int Hh) {
-    auto quad = warpedQuad(H, W, Hh);
-    std::vector<cv::Point> poly;
-    poly.reserve(4);
-    for (const auto& p : quad) poly.emplace_back(cvRound(p.x()), cvRound(p.y()));
-    cv::Mat mask = cv::Mat::zeros(Hh, W, CV_8U);
-    cv::fillConvexPoly(mask, poly, cv::Scalar(255));
-    return mask;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. Shared tail: canvas fit, warp, projection matrices.
-//    Used by every Loop-Zhang variant below once H1/H2 (pre-canvas-fit) are
-//    known — independent of how H1/H2 were constructed.
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
+// Shared Loop-Zhang output stage
+//
+// The core algorithm produces two raw homographies. This stage applies one
+// shared canvas transform, warps the images and masks, and updates the camera
+// projection matrices used by triangulation.
+// -----------------------------------------------------------------------------
 
 static RectifyResult finalizeRectification(
     const Eigen::Matrix3d& H1, const Eigen::Matrix3d& H2,
     const cv::Mat& left, const cv::Mat& right, const CalibData& calib,
-    int W, int H,
-    bool preserveAspectRatio = false) {
+    int W, int H) {
     RectifyResult res;
 
-    // 1. Fit the warped content back into the (W,H) canvas. The vertical
-    //    scale/offset MUST be shared by both images to preserve the row
-    //    alignment just established; the horizontal scale is also shared
-    //    (keeps the disparity range sane for the matching stage), with an
-    //    independent horizontal offset per image (a harmless disparity shift).
-    //
-    //    NOTE: this is a zero-crop, "fit everything, pad the rest with
-    //    black" fit -- for wide-aspect-ratio images with even modest tilt,
-    //    forcing a same-aspect-ratio zoom-to-fill (no black padding) turns
-    //    out to require discarding the majority of the frame (see prior
-    //    analysis), so that approach was deliberately NOT kept. Padding is
-    //    handled downstream instead via res.mask1/res.mask2 (see below),
-    //    which matching.cpp uses to keep the matcher from treating the
-    //    black padding as real, flat texture.
+    // Find one bounding box that contains both warped images. Both views are
+    // then moved and scaled with the same matrix. Using a shared transform is
+    // important: different vertical transforms would break row alignment, and
+    // different horizontal translations would add an arbitrary disparity shift.
     BBox b1 = warpedBBox(H1, W, H);
     BBox b2 = warpedBBox(H2, W, H);
-    double ymin = std::min(b1.ymin, b2.ymin), ymax = std::max(b1.ymax, b2.ymax);
-    double sy = H / (ymax - ymin);
-    double sx = W / std::max(b1.xmax - b1.xmin, b2.xmax - b2.xmin);
-    if (preserveAspectRatio) {
-        // Share a single scale between x and y so the canvas fit cannot
-        // distort geometry (stretch content differently per axis); only the
-        // translations remain independent per image/axis.
-        double s = std::min(sx, sy);
-        sx = s;
-        sy = s;
-    }
-    double ty = -ymin * sy;
-    double tx1 = -b1.xmin * sx;
-    double tx2 = -b2.xmin * sx;
 
-    Eigen::Matrix3d S1; S1 << sx, 0, tx1, 0, sy, ty, 0, 0, 1;
-    Eigen::Matrix3d S2; S2 << sx, 0, tx2, 0, sy, ty, 0, 0, 1;
-    Eigen::Matrix3d H1_final = S1 * H1;
-    Eigen::Matrix3d H2_final = S2 * H2;
+    // One shared output similarity for both images.  In particular, do not
+    // translate the two images independently in x: that preserves scanlines
+    // but injects an arbitrary constant into every disparity.
+    const double xmin = std::min(b1.xmin, b2.xmin);
+    const double xmax = std::max(b1.xmax, b2.xmax);
+    const double ymin = std::min(b1.ymin, b2.ymin);
+    const double ymax = std::max(b1.ymax, b2.ymax);
+    const double spanX = xmax - xmin;
+    const double spanY = ymax - ymin;
+    if (!(spanX > 1e-9) || !(spanY > 1e-9) ||
+        !std::isfinite(spanX) || !std::isfinite(spanY))
+        throw std::runtime_error("Invalid Loop-Zhang warped bounds");
+
+    // Use one isotropic scale for both views. This keeps the aspect ratio and
+    // avoids introducing different horizontal and vertical magnification.
+    const double sxFit = static_cast<double>(W) / spanX;
+    const double syFit = static_cast<double>(H) / spanY;
+    const double sharedScale = std::min(sxFit, syFit);
+    const double sx = sharedScale;
+    const double sy = sharedScale;
+
+    const double tx = -xmin * sx + 0.5 * (W - spanX * sx);
+    const double ty = -ymin * sy + 0.5 * (H - spanY * sy);
+
+    Eigen::Matrix3d C;
+    C << sx, 0, tx,
+         0, sy, ty,
+         0,  0,  1;
+    Eigen::Matrix3d H1_final = C * H1;
+    Eigen::Matrix3d H2_final = C * H2;
+
+    std::cout << "[rectify] shared canvas: sx=" << sx << " sy=" << sy
+              << " tx=" << tx << " ty=" << ty << "\n";
 
     // 2. Convert back to OpenCV and warp the images
     res.H1 = eigenToCv(H1_final);
     res.H2 = eigenToCv(H2_final);
 
     cv::Size sz(W, H);
-    cv::warpPerspective(left, res.left_rect, res.H1, sz, cv::INTER_LINEAR);
-    cv::warpPerspective(right, res.right_rect, res.H2, sz, cv::INTER_LINEAR);
+    cv::warpPerspective(left, res.left_rect, res.H1, sz, cv::INTER_LINEAR,
+                        cv::BORDER_CONSTANT, cv::Scalar());
+    cv::warpPerspective(right, res.right_rect, res.H2, sz, cv::INTER_LINEAR,
+                        cv::BORDER_CONSTANT, cv::Scalar());
 
-    // 2b. Validity masks: warped-quad content region rasterized to a
-    // per-pixel mask so matching.cpp can invalidate disparity computed over
-    // black padding instead of trying to eliminate the padding via cropping.
-    res.mask1 = rasterizeQuadMask(H1_final, W, H);
-    res.mask2 = rasterizeQuadMask(H2_final, W, H);
+    // Generate validity masks through the same warp operation.
+    cv::Mat sourceMask(H, W, CV_8U, cv::Scalar(255));
+    cv::warpPerspective(sourceMask, res.mask1, res.H1, sz, cv::INTER_NEAREST,
+                        cv::BORDER_CONSTANT, cv::Scalar(0));
+    cv::warpPerspective(sourceMask, res.mask2, res.H2, sz, cv::INTER_NEAREST,
+                        cv::BORDER_CONSTANT, cv::Scalar(0));
 
     // 3. Rectified projection matrices: for a planar image-space homography
     //    H applied to an image with original projection matrix P_orig, the
@@ -306,198 +229,176 @@ static RectifyResult finalizeRectification(
     res.P1 = eigenToCv34(H1_final * P1_orig);
     res.P2 = eigenToCv34(H2_final * P2_orig);
 
-    // Points triangulated via P1 = H1*[K0|0] land directly in the original,
-    // unrotated left-camera frame (H1 only warps the 2D image — it implies
-    // no actual 3D camera rotation), so no extra un-rotation is needed here.
     res.R0_rect = cv::Mat::eye(3, 3, CV_64F);
-
-    // res.Q intentionally left empty: there is no valid single-focal-length
-    // Q matrix for a general projective warp. Downstream code must triangulate
-    // via res.P1/res.P2 (see disparityToCloudViaP in depth.cpp) instead of Q.
 
     return res;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. Loop-Zhang closed-form construction (rectifyLoopZhang helpers)
-//
-// Faithful to Loop & Zhang, "Computing Rectifying Homographies for Stereo
-// Vision" (CVPR 1999): a distortion-minimizing projective step that couples
-// the left/right epipole warps through F, a closed-form similarity step
-// derived directly from F's entries, and a closed-form shear step applied
-// symmetrically to both images.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Bottom row of the left projective transform H_p: w = [e]_x * z. H_p sends
-// the left epipole e to infinity along the shared direction z. Normalizing
-// so the bottom row ends in 1 is required, not optional: Hp's top two rows
-// are fixed to [1,0,0]/[0,1,0] (not free to rescale), and buildHsimPair's
-// closed-form formulas below use w.x()/w.y() assuming exactly this
-// normalization. The 1e-9 floor guards the case where z happens to be
-// (near-)parallel to the direction that sends wz to zero.
-static Eigen::Matrix3d buildHp(const Eigen::Vector3d& e, const Eigen::Vector3d& z) {
+/**
+ * @brief Construct a homeography whose projective row makes the left epipole map to a point at infinity.
+ * 
+ * @param[in] e Left epipole
+ * @param[in] z Chosen direction 
+ * @return Eigen::Matrix3d Left projective homeography
+ */
+static Eigen::Matrix3d buildLeftProjectiveHomeography(const Eigen::Vector3d& e, const Eigen::Vector3d& z) {
     Eigen::Vector3d w = skewSymmetric(e) * z;
+    
     double wz = w.z();
-    if (std::abs(wz) < 1e-9) wz = 1e-9; // last-resort guard, see comment above
+    if (std::abs(wz) < 1e-9 || !std::isfinite(wz))
+        throw std::runtime_error("Degenerate Loop-Zhang left projective transform");
     w /= wz;
 
-    Eigen::Matrix3d Hp;
-    Hp << 1, 0, 0,
-          0, 1, 0,
-          w.x(), w.y(), 1;
-    return Hp;
+    Eigen::Matrix3d projective_homeography;
+    projective_homeography << 1, 0, 0,
+                              0, 1, 0,
+                              w.x(), w.y(), 1;
+    return projective_homeography;
 }
 
-// Bottom row of the right projective transform H'_p: w' = F * z. Coupled to
-// buildHp through the same z and F, so H_p/H'_p stay in epipolar
-// correspondence. Same normalization requirement and last-resort guard as
-// buildHp above.
-static Eigen::Matrix3d buildHpPrime(const Eigen::Matrix3d& F, const Eigen::Vector3d& z) {
+/**
+ * @brief Build the right projective homography that sends the right epipole to infinity along a given direction.
+ *        Fz is a right epipolar line, it is orthogonal to the right epipole.
+ *        So, we can use Fz as the projective row to send the epipole to infinity.
+ * @param[in] F Fundamental matrix
+ * @param[in] z Chosen direction
+ * @return Eigen::Matrix3d Right projective homeography
+ */
+static Eigen::Matrix3d buildRightProjectiveHomeography(const Eigen::Matrix3d& F, const Eigen::Vector3d& z) {
     Eigen::Vector3d wp = F * z;
     double wz = wp.z();
-    if (std::abs(wz) < 1e-9) wz = 1e-9;
+    if (std::abs(wz) < 1e-9 || !std::isfinite(wz))
+        throw std::runtime_error("Degenerate Loop-Zhang right projective transform");
     wp /= wz;
 
-    Eigen::Matrix3d Hpp;
-    Hpp << 1, 0, 0,
-           0, 1, 0,
-           wp.x(), wp.y(), 1;
-    return Hpp;
+    Eigen::Matrix3d projective_homeography;
+    projective_homeography << 1, 0, 0,
+                              0, 1, 0,
+                              wp.x(), wp.y(), 1;
+    return projective_homeography;
 }
 
-// Closed-form pixel-spread second-moment block for a W x H image: the
-// covariance of pixel coordinates about the image center, i.e. sum over all
-// pixels of (x-x_bar)(y-y_bar). Legitimately zero off-diagonal (x,y indices
-// are independent/separable) and legitimately zero in row/col 2 when
-// embedded (variance of a constant is 0, covariance of a coordinate with a
-// constant is 0) -- unlike pcpcT3x3 below, this one really is a 2x2 fact.
-static Eigen::Matrix2d ppT2x2(double W, double H) {
-    Eigen::Matrix2d PPt;
-    PPt << (W * H / 12.0) * (W * W - 1), 0,
-           0,                             (W * H / 12.0) * (H * H - 1);
-    return PPt;
-}
 
-// Full pc*pc^T for the homogeneous image-center point pc=(W/2,H/2,1). Unlike
-// ppT2x2 (a covariance, genuinely zero in row/col 2), this is a literal
-// point's outer product: w^T*pc = w1*(W/2) + w2*(H/2) + w3, so the row/col-2
-// cross terms and the trailing 1 are real, non-negligible contributions to
-// the quadratic form and must not be dropped.
-static Eigen::Matrix3d pcpcT3x3(double W, double H) {
-    Eigen::Vector3d pc(0.5 * W, 0.5 * H, 1.0);
-    return pc * pc.transpose();
-}
-
-// Embed a 2x2 block into the top-left of a 3x3 matrix (zero row/col for the
-// homogeneous coordinate) -- only valid for covariance-like blocks (see
-// ppT2x2) where that row/col is genuinely zero, not for point outer products
-// (see pcpcT3x3, which builds its own full 3x3 instead of using this).
-static Eigen::Matrix3d embed2x2(const Eigen::Matrix2d& block) {
-    Eigen::Matrix3d M = Eigen::Matrix3d::Zero();
-    M.block<2, 2>(0, 0) = block;
-    return M;
-}
 
 struct DistortionMats { Eigen::Matrix3d A, B, Ap, Bp; };
 
-// Build the four distortion matrices used by the DT(z) objective. A,B come
-// from the left epipole/image size; A',B' come from F conjugating the same
-// closed-form blocks, since w' = F*z couples the right transform to z
-// through F directly (see buildHpPrime) rather than through the right
-// epipole's cross matrix. Independent of z, so this is computed once per
-// rectifyLoopZhang call and reused by every sample of the search.
-static DistortionMats obtainAB(const Eigen::Vector3d& e1, const Eigen::Matrix3d& F,
-                                int W, int H) {
-    Eigen::Matrix3d PPt   = embed2x2(ppT2x2((double)W, (double)H));
-    Eigen::Matrix3d PcPct = pcpcT3x3((double)W, (double)H);
-    Eigen::Matrix3d ex    = skewSymmetric(e1);
+/**
+ * @brief Precomputs four matrices that let us quickly measure how much distortion a candidate direction would cause in both images
+ *        A, B describe the left image using its epipole and image geometry
+ *        A', B' describe the right image using the fundamental matrix
+ * @param left_epipole 
+ * @param F 
+ * @param width 
+ * @param height 
+ * @return DistortionMats 
+ */
+static DistortionMats computeDistortionMatrices(const Eigen::Vector3d& left_epipole, const Eigen::Matrix3d& F,
+                                int width, int height) {
+    
+    // Covariance of the pixel coordinates in the image
+    const double w = static_cast<double>(width);
+    const double h = static_cast<double>(height);
 
-    DistortionMats m;
-    m.A  = ex.transpose() * PPt   * ex;
-    m.B  = ex.transpose() * PcPct * ex;
-    m.Ap = F.transpose()  * PPt   * F;
-    m.Bp = F.transpose()  * PcPct * F;
-    return m;
+    
+    Eigen::Matrix3d pixel_spread = Eigen::Matrix3d::Zero();
+    // Pixel spread concerns only the x- and y- coordinates
+        // How much the projective scaling varies across the whole image
+    pixel_spread(0, 0) = (w * h / 12.0) * (w * w - 1.0);
+    pixel_spread(1, 1) = (w * h / 12.0) * (h * h - 1.0);
+    
+    
+
+    // Create image center
+    const Eigen::Vector3d image_center(0.5 * w, 0.5 * h, 1.0);
+    const Eigen::Matrix3d center_moment = image_center * image_center.transpose();  // Measures the projective scale at the center of the image
+
+    
+    // Computes the projective row of the homeography given the epipole and the direction
+        // Measures how much the projective scaling varies across the whole image
+    const Eigen::Matrix3d left_proj_row = skewSymmetric(left_epipole);
+
+    DistortionMats matrices;
+
+    matrices.A = left_proj_row.transpose() * pixel_spread *left_proj_row;
+    matrices.B = left_proj_row.transpose() * center_moment * left_proj_row;
+
+    matrices.Ap = F.transpose() * pixel_spread * F;
+    matrices.Bp = F.transpose() * center_moment * F;
+    
+    return matrices;
 }
 
-// DT(phi) = (z^T A z)/(z^T B z) + (z^T A' z)/(z^T B' z), z = (cos phi, sin phi, 0).
-// z is a direction at infinity (scale-invariant), so a single angle fully
-// parameterizes the search space -- this also sidesteps inverting B/B',
-// which are rank-1 outer products and thus ill-posed for a generalized
-// eigenvalue formulation.
-static double distortionObjective(double phi, const DistortionMats& m) {
+/**
+ * @brief Computes the distortion objective for a given angle.
+ *        Compute distoriton in both images and sum them. 
+ * @param phi Candidate angle
+ * @param dist_matrices Precomputed distortion matrices for the left and right images.
+ * @return double 
+ */
+static double distortionObjective(double phi, const DistortionMats& dist_matrices) {
+    // Convert candidate angle into rectificaiton direction
     Eigen::Vector3d z(std::cos(phi), std::sin(phi), 0.0);
-    double den1 = z.dot(m.B  * z);
-    double den2 = z.dot(m.Bp * z);
+    
+    double den1 = z.dot(dist_matrices.B  * z);
+    double den2 = z.dot(dist_matrices.Bp * z);
+    
     if (std::abs(den1) < 1e-9 || std::abs(den2) < 1e-9)
         return std::numeric_limits<double>::infinity();
-    double num1 = z.dot(m.A  * z);
-    double num2 = z.dot(m.Ap * z);
+    
+    double num1 = z.dot(dist_matrices.A  * z);
+    double num2 = z.dot(dist_matrices.Ap * z);
+    
     return num1 / den1 + num2 / den2;
 }
 
-// Global minimum of Loop & Zhang's DT(phi) over phi in [0, pi): a coarse
-// grid search (the objective can have multiple local minima) followed by a
-// golden-section refine around the best sample.
-static double findOptimalPhi(const DistortionMats& m) {
+/**
+ * @brief Find the direction that sends the epipoles to infinity 
+ *        while introducing as little distortion as possible in both images. 
+ * 
+ * @param[in] dist_matrices Precomputed distortion matrices for the left and right images.
+ * @return double Direction angle that minimizes distortion in both images.
+ */
+static double findOptimalPhi(const DistortionMats& dist_matrices) {
     auto objective = [&](double phi) {
-        return distortionObjective(phi, m);
+        return distortionObjective(phi, dist_matrices);
     };
 
-    constexpr int kGridSamples = 3600; // 0.05 deg resolution
-    double bestPhi = 0.0, bestCost = std::numeric_limits<double>::infinity();
-    for (int i = 0; i < kGridSamples; ++i) {
-        double phi = M_PI * (double)i / (double)kGridSamples;
+    // Grid search over directions
+    constexpr int k_grid_samples = 3600; // 0.05 deg resolution
+    double best_phi = 0.0, best_cost = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < k_grid_samples; ++i) {
+        double phi = M_PI * (double)i / (double)k_grid_samples;
         double cost = objective(phi);
-        if (cost < bestCost) { bestCost = cost; bestPhi = phi; }
+        if (cost < best_cost) { best_cost = cost; best_phi = phi; }
     }
 
-    constexpr double kGoldenRatio = 0.6180339887498949;
-    double step = M_PI / kGridSamples;
-    double lo = bestPhi - step, hi = bestPhi + step;
-    double x1 = hi - kGoldenRatio * (hi - lo);
-    double x2 = lo + kGoldenRatio * (hi - lo);
+    // Refine the best direction with golden-section search
+    const double golden_section_ratio =(std::sqrt(5.0) - 1.0) / 2.0;
+    double step = M_PI / k_grid_samples;
+    
+    double lo = best_phi - step, hi = best_phi + step;
+    double x1 = hi - golden_section_ratio * (hi - lo);
+    double x2 = lo + golden_section_ratio * (hi - lo);
+    
     double f1 = objective(x1);
     double f2 = objective(x2);
+    
     for (int it = 0; it < 60 && (hi - lo) > 1e-10; ++it) {
         if (f1 < f2) {
             hi = x2; x2 = x1; f2 = f1;
-            x1 = hi - kGoldenRatio * (hi - lo);
+            x1 = hi - golden_section_ratio * (hi - lo);
             f1 = objective(x1);
         } else {
             lo = x1; x1 = x2; f1 = f2;
-            x2 = lo + kGoldenRatio * (hi - lo);
+            x2 = lo + golden_section_ratio * (hi - lo);
             f2 = objective(x2);
         }
     }
     return 0.5 * (lo + hi);
 }
 
-// Closed-form similarity components H_sim, H_sim' from F's entries and the
-// normalized bottom rows w, w' of H_p, H_p' (Loop & Zhang, paper Eqs.
-// 99-108). This codebase's F is 0-indexed (row,col) (calib.F.at<double>(row,col)),
-// matching the paper's own indexing -- formulas transcribe with F(row,col)
-// directly, no transpose.
-// Diagonal terms use w.y()/wp.y(), off-diagonal terms use w.x()/wp.x().
-//
-// Derivation note: solving the rectifying epipolar constraint
-// HpreR^T [i]_x HpreL = k*F (with HpreL = Hsim*Hp, HpreR = Hsim'*Hp', and
-// Hsim/Hsim' constrained to the [[a,b,0],[-b,a,c],[0,0,1]] similarity form)
-// for k=1 gives a,b uniquely from F,w and ap,bp uniquely from F,wp -- the
-// right-image (primed) terms are NOT the same sign pattern as the left, so
-// they must be derived independently rather than assumed symmetric with
-// w<->wp substituted in.
-//
-// The first row of H_sim/H_sim' is only constrained (by the paper's
-// derivation) up to a +/-90-degree rotation -- orthogonality to the second
-// row has two solutions, (vb,-va) and (-vb,va). The formula below fixes one
-// branch for each image independently, which is not guaranteed to pick the
-// same handedness for both; the caller (rectifyLoopZhang) checks
-// linearDet2x2 on the composed H_pre for both images and flips the right
-// image's first row to the other branch if they disagree in orientation.
-// A row-alignment residual check alone cannot catch this: |Δy| is blind to
-// a left-right mirror in x.
-static std::pair<Eigen::Matrix3d, Eigen::Matrix3d> buildHsimPair(
+
+static std::pair<Eigen::Matrix3d, Eigen::Matrix3d> buildSimilarityProjection(
     const Eigen::Matrix3d& F, const Eigen::Vector3d& w, const Eigen::Vector3d& wp,
     double vcPrime) {
     Eigen::Matrix3d Hsim = Eigen::Matrix3d::Zero();
@@ -519,23 +420,30 @@ static std::pair<Eigen::Matrix3d, Eigen::Matrix3d> buildHsimPair(
     return { Hsim, HsimP };
 }
 
-// Closed-form solve for vc' (the one free scalar left in H_sim/H_sim'): with
-// vc'=0, H_sim/H_sim' are pure affine similarities (bottom row [0,0,1]), so
-// composed with the already-projective H_p/H_p' the warped v-coordinate of
-// every corner is exactly affine (additive) in vc' -- no search needed, just
-// a min over the 8 corner v-values (4 per image, vc'=0 baseline already
-// includes the per-image F(2,2) asymmetry from buildHsimPair) so the
-// tightest common vertical bound starts at 0.
-static double solveVcPrime(const Eigen::Matrix3d& Hp, const Eigen::Matrix3d& HpP,
+
+/**
+ * @brief Computes the vertical translation needed to align the two warped images.
+ *      The translation is computed by finding the minimum y-coordinate of the warped corners of both images
+ * 
+ * @param left_proj_homeography 
+ * @param right_proj_homeography 
+ * @param F 
+ * @param w 
+ * @param wp 
+ * @param width 
+ * @param height 
+ * @return double 
+ */
+static double findCommonVerticalTranslation(const Eigen::Matrix3d& left_proj_homeography, const Eigen::Matrix3d& right_proj_homeography,
                             const Eigen::Matrix3d& F,
                             const Eigen::Vector3d& w, const Eigen::Vector3d& wp,
-                            int W, int H) {
-    auto [Hsim0, HsimP0] = buildHsimPair(F, w, wp, 0.0);
-    Eigen::Matrix3d preL = Hsim0  * Hp;
-    Eigen::Matrix3d preR = HsimP0 * HpP;
+                            int width, int height) {
+    auto [Hsim0, HsimP0] = buildSimilarityProjection(F, w, wp, 0.0);
+    Eigen::Matrix3d preL = Hsim0  * left_proj_homeography;
+    Eigen::Matrix3d preR = HsimP0 * right_proj_homeography;
 
-    auto quadL = warpedQuad(preL, W, H);
-    auto quadR = warpedQuad(preR, W, H);
+    auto quadL = warpedQuad(preL, width, height);
+    auto quadR = warpedQuad(preR, width, height);
 
     double minV = std::numeric_limits<double>::infinity();
     for (const auto& p : quadL) minV = std::min(minV, p.y());
@@ -544,9 +452,7 @@ static double solveVcPrime(const Eigen::Matrix3d& Hp, const Eigen::Matrix3d& HpP
     return -minV;
 }
 
-// Closed-form shear correction from edge-midpoint transforms (Loop & Zhang
-// §2.3). Called once per image, each with that image's own H_sim*H_p (or
-// H_sim'*H_p') composite, applied symmetrically to both.
+
 static Eigen::Matrix3d buildShear(const Eigen::Matrix3d& H_partial, int W, int Hh) {
     Eigen::Vector3d a(W / 2.0 - 1, 0,            1); // top edge midpoint
     Eigen::Vector3d b(0,           Hh / 2.0 - 1, 1); // left edge midpoint
@@ -564,22 +470,11 @@ static Eigen::Matrix3d buildShear(const Eigen::Matrix3d& H_partial, int W, int H
     double xu = xhat.x(), xv = xhat.y();
     double yu = yhat.x(), yv = yhat.y();
     double M = W, N = Hh;
-    // denom = M*N*(xv*yu - xu*yv); sa/sb share this denom with opposite sign,
-    // per Loop & Zhang Eqs. 124-125. Note: sa pairs N^2 (height^2) with
-    // xv^2 and M^2 (width^2) with yv^2 -- NOT M^2 with xv^2 -- this was a
-    // transcription bug in an earlier version of this function; verified
-    // against an independent reference implementation of the same formula.
+
     double denom = M * N * (xv * yu - xu * yv);
     double sa = (N * N * xv * xv + M * M * yv * yv) / denom;
     double sb = (N * N * xu * xv + M * M * yu * yv) / -denom;
 
-    // The closed-form solve above has two algebraic roots -- (sa,sb) and
-    // (-sa,-sb) -- differing by a reflection. Only the positive-sa root is
-    // a pure shear+scale; a negative sa means this branch would flip the
-    // whole image (visible downstream as a canvas tilt near 180 deg and a
-    // negative-determinant warning). Force the shear-preserving branch,
-    // matching the convention used by other Loop-Zhang implementations of
-    // this same closed form.
     if (sa < 0.0) {
         sa = -sa;
         sb = -sb;
@@ -590,70 +485,54 @@ static Eigen::Matrix3d buildShear(const Eigen::Matrix3d& H_partial, int W, int H
     return Hsh;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 5. The Loop-Zhang Method (faithful closed-form construction)
-// ─────────────────────────────────────────────────────────────────────────────
 
 RectifyResult rectifyLoopZhang(const cv::Mat& left, const cv::Mat& right,
     const CalibData& calib) {
     int W = left.cols;
     int H = left.rows;
 
-    // Convert OpenCV Fundamental Matrix to Eigen
-    Eigen::Matrix3d F;
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j)
-            F(i, j) = calib.F.at<double>(i, j);
-
-    // 1. Left epipole. (The right epipole is never needed explicitly here --
-    //    A'/B' and H'_p are built from F directly, see obtainAB/buildHpPrime.)
+    Eigen::Matrix3d F = cvToEigen3x3(calib.F);
+    
+    // 1. Compute the left epipole
     Eigen::Vector3d e1 = computeEpipole(F);
 
-    // 2. Distortion-minimizing shared direction z, found via grid +
-    //    golden-section search over the angle phi (z=(cos phi, sin phi, 0)).
-    DistortionMats dm = obtainAB(e1, F, W, H);
-    double phi = findOptimalPhi(dm);
+    // 2. Find a direction that minimizes distortion in both images
+    DistortionMats dist_matrices = computeDistortionMatrices(e1, F, W, H);
+    double phi = findOptimalPhi(dist_matrices);
     Eigen::Vector3d z(std::cos(phi), std::sin(phi), 0.0);
 
-    // 3. Projective transforms, coupled through F.
-    Eigen::Matrix3d Hp  = buildHp(e1, z);
-    Eigen::Matrix3d HpP = buildHpPrime(F, z);
-    Eigen::Vector3d w  = Hp.row(2).transpose();
-    Eigen::Vector3d wp = HpP.row(2).transpose();
+    // 3: Find warps that send the epipoles to infinity along the chosen direction z -> parallel lines in infinity
+    Eigen::Matrix3d proj_homeography_left  = buildLeftProjectiveHomeography(e1, z);
+    Eigen::Matrix3d proj_homeography_right = buildRightProjectiveHomeography(F, z);
 
-    // 4. Similarity components: solve the one free scalar vc' in closed
-    //    form, then build the finalized H_sim/H_sim'.
-    double vcPrime = solveVcPrime(Hp, HpP, F, w, wp, W, H);
-    auto [Hsim, HsimP] = buildHsimPair(F, w, wp, vcPrime);
+    Eigen::Vector3d w  = proj_homeography_left.row(2).transpose();
+    Eigen::Vector3d wp = proj_homeography_right.row(2).transpose();
 
-    // 5. Orientation check: H_sim's first row is only fixed up to a
-    //    +/-90-degree rotation (see buildHsimPair), and nothing guarantees
-    //    the same branch is correct for both images. If the two composed
-    //    partials disagree in handedness (opposite-sign determinant), flip
-    //    H_sim' to the other branch -- a row-alignment residual check alone
-    //    can't catch this, since |Δy| is blind to a left-right mirror in x.
-    Eigen::Matrix3d HpreL = Hsim  * Hp;
-    Eigen::Matrix3d HpreR = HsimP * HpP;
-    if (linearDet2x2(HpreL) * linearDet2x2(HpreR) < 0.0) {
-        HsimP(0, 0) *= -1.0;
-        HsimP(0, 1) *= -1.0;
-        HpreR = HsimP * HpP;
-    }
+    // 4. Build the similarity transforms to rotate, scale and vertically shift the two images
+        // So the corresponding epipolar lines lie on the same horizontal rows
+        // Projective homeographies make teh epipolar lines parallel (not horizontal and aligned between images)
+    
+    double vertical_trans = findCommonVerticalTranslation(proj_homeography_left, proj_homeography_right, F, w, wp, W, H);
+    auto [sim_left, sim_right] = buildSimilarityProjection(F, w, wp, vertical_trans);
 
-    // 6. Shear, built independently for both images.
-    Eigen::Matrix3d Hsh  = buildShear(HpreL, W, H);
-    Eigen::Matrix3d HshP = buildShear(HpreR, W, H);
+    // Combine the projective and row-alignment stages.
+    Eigen::Matrix3d left_aligned = sim_left  * proj_homeography_left;
+    Eigen::Matrix3d right_aligned = sim_right * proj_homeography_right;
 
-    // 7. Compose final pre-canvas-fit homographies.
-    Eigen::Matrix3d H1 = Hsh  * HpreL;
-    Eigen::Matrix3d H2 = HshP * HpreR;
+    // Reduce shape distortion without changing the rectified row coordinate.
+    Eigen::Matrix3d left_shear  = buildShear(left_aligned, W, H);
+    Eigen::Matrix3d right_shear = buildShear(right_aligned, W, H);
 
+    // Compose the raw homographies before fitting them to the output canvas.
+    Eigen::Matrix3d H1 = left_shear  * left_aligned;
+    Eigen::Matrix3d H2 = right_shear * right_aligned;
+
+    // Place both warped views on one shared canvas. The same scale and
+    // translation are applied to both images, so row alignment is preserved.
     return finalizeRectification(H1, H2, left, right, calib, W, H);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Standalone executable
-// ─────────────────────────────────────────────────────────────────────────────
+
 #ifndef PIPELINE_BUILD
 int main(int argc, char** argv) {
     if (argc < 5) {
@@ -675,8 +554,8 @@ int main(int argc, char** argv) {
     DTUDataLoader loader(dataPath.string());
     std::string calib_path = "results/scene" + sceneId + "/sparse_matching/calib_" + viewL + "_" + viewR + ".yaml";
     CalibData calib = loadCalibData(calib_path);
-    if (!calib.hasIntrinsics() || !calib.hasRelativePose()) {
-        std::cout << "[rectification]: Missing intrinsics or relative pose — run sparse_matching first.\n";
+    if (!calib.hasIntrinsics() || !calib.hasRelativePose() || !calib.hasFundamentalMatrix()) {
+        std::cout << "[rectification]: Missing intrinsics, relative pose, or fundamental matrix — run sparse_matching first.\n";
         throw std::runtime_error("Incomplete calibration: " + calib_path);
     }
 
@@ -712,13 +591,22 @@ int main(int argc, char** argv) {
         fsOut.release();
     }
 
-    // Side-by-side comparison with horizontal lines
     cv::Mat side;
     cv::hconcat(res.left_rect, res.right_rect, side);
-    for (int y = 0; y < side.rows; y += 40)
-        cv::line(side, {0, y}, {side.cols, y}, {0, 255, 0}, 1);
-    cv::imwrite(savePath + "/side_by_side_" + viewL + "_" + viewR + ".png", side);
 
+    for (int y = 0; y < side.rows; y += 40) {
+        const bool validInLeft =
+            cv::countNonZero(res.mask1.row(y)) > 0;
+
+        const bool validInRight =
+            cv::countNonZero(res.mask2.row(y)) > 0;
+
+        if (validInLeft && validInRight) {
+            cv::line(side,cv::Point(0, y), cv::Point(side.cols - 1, y), cv::Scalar(0, 255, 0), 1);
+        }
+    }
+    cv::imwrite(savePath + "/epipolar_lines_" + viewL + "_" + viewR + ".png", side);
+    
     std::cout << "Saved rectified images to " << savePath << "\n";
     return 0;
 }

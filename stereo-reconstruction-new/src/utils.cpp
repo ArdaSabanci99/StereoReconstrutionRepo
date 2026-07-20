@@ -87,3 +87,54 @@ std::string padViewId(int id) {
     ss << std::setw(3) << std::setfill('0') << id;
     return ss.str();
 }
+
+Eigen::Vector3d triangulatePoint(const Eigen::Vector3d & pt_left, const Eigen::Vector3d & pt_right,
+                                  const Eigen::Matrix<double, 3, 4> & P_left, const Eigen::Matrix<double, 3, 4> & P_right) {
+    Eigen::Matrix4d A;
+
+    // Constraints from left view
+        // u = p1.X / p3.X -> u . (p3.X) - (p1.X) = 0 -> (u.p3 - p1)X = 0 -> row in linear system AX = 0
+        // v = p2.X / p3.X
+    A.row(0) = pt_left.x() * P_left.row(2) - P_left.row(0);
+    A.row(1) = pt_left.y() * P_left.row(2) - P_left.row(1);
+
+    // Constraints from right view
+    A.row(2) = pt_right.x() * P_right.row(2) - P_right.row(0);
+    A.row(3) = pt_right.y() * P_right.row(2) - P_right.row(1);
+
+    Eigen::JacobiSVD<Eigen::Matrix4d> svd(A, Eigen::ComputeFullV);
+
+    // Smallest singular vector minimizes AX=0
+    Eigen::Vector4d X_hom = svd.matrixV().col(3);
+
+    // Normalizing by scale factor
+    return X_hom.head<3>() / X_hom(3);
+}
+
+cv::Mat eigenToCv(const Eigen::Matrix3d& src) {
+    cv::Mat dst(3, 3, CV_64F);
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            dst.at<double>(i, j) = src(i, j);
+    return dst;
+}
+
+cv::Mat eigenToCv34(const Eigen::Matrix<double, 3, 4>& src) {
+    cv::Mat dst(3, 4, CV_64F);
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 4; ++j)
+            dst.at<double>(i, j) = src(i, j);
+    return dst;
+}
+
+Eigen::Matrix3d cvToEigen3x3(const cv::Mat& src) {
+    Eigen::Matrix3d dst;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            dst(i, j) = src.at<double>(i, j);
+    return dst;
+}
+
+Eigen::Vector3d cvToEigenVec3(const cv::Mat& src) {
+    return Eigen::Vector3d(src.at<double>(0), src.at<double>(1), src.at<double>(2));
+}

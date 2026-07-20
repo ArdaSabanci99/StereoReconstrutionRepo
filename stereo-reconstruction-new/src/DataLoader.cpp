@@ -92,10 +92,29 @@ CalibData DTUDataLoader::loadCalibIntrinsics(const std::string & view_left_id, c
 void DTUDataLoader::loadLeftExtrinsics(CalibData& calib,
                                         const std::string& view_left_id,
                                         const std::string& view_right_id) {
-    
+
     // Chooding the camera that is effectively the left camera in the stereo pair (geometrically to the left of the other camera)
     const std::string& effectiveId = calib.swapped ? view_right_id : view_left_id;
     auto [K, R, t] = decomposeProjectionMatrix(effectiveId);
     calib.R0 = R;
     calib.t0 = t;
+}
+
+void DTUDataLoader::loadGTRelativePose(CalibData& calib,
+                                        const std::string& view_left_id,
+                                        const std::string& view_right_id) {
+    auto [K0_gt, R0_gt, t0_gt] = decomposeProjectionMatrix(view_left_id);
+    auto [K1_gt, R1_gt, t1_gt] = decomposeProjectionMatrix(view_right_id);
+
+    calib.R_rel = R1_gt * R0_gt.t();
+    calib.t_rel = t1_gt - calib.R_rel * t0_gt;   // in mm (DTU world units)
+
+    const cv::Mat& t = calib.t_rel;
+    cv::Mat tx = (cv::Mat_<double>(3, 3) <<
+                  0, -t.at<double>(2), t.at<double>(1),
+                  t.at<double>(2), 0, -t.at<double>(0),
+                  -t.at<double>(1), t.at<double>(0), 0);
+    cv::Mat E_gt = tx * calib.R_rel;
+    calib.F = calib.K1.inv().t() * E_gt * calib.K0.inv();
+    calib.verifyLeftRightCameraOrder();
 }
