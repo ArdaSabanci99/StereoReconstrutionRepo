@@ -139,27 +139,32 @@ static std::array<Eigen::Vector2d, 4> warpedQuad(
 // -----------------------------------------------------------------------------
 // Shared Loop-Zhang output stage
 //
-// The core algorithm produces two raw homographies. This stage applies one
-// shared canvas transform, warps the images and masks, and updates the camera
-// projection matrices used by triangulation.
+// 
 // -----------------------------------------------------------------------------
-
+/**
+ * @brief Finalize the rectification process by applying a shared canvas transform.
+ *        The core algorithm produces two raw homographies. 
+ *        This stage applies one shared canvas transform, warps the images and masks, 
+ *        and updates the camera projection matrices used by triangulation.
+ * 
+ * @param H1 
+ * @param H2 
+ * @param left 
+ * @param right 
+ * @param calib 
+ * @param W 
+ * @param H 
+ * @return RectifyResult 
+ */
 static RectifyResult finalizeRectification(
     const Eigen::Matrix3d& H1, const Eigen::Matrix3d& H2,
     const cv::Mat& left, const cv::Mat& right, const CalibData& calib,
     int W, int H) {
     RectifyResult res;
 
-    // Find one bounding box that contains both warped images. Both views are
-    // then moved and scaled with the same matrix. Using a shared transform is
-    // important: different vertical transforms would break row alignment, and
-    // different horizontal translations would add an arbitrary disparity shift.
     BBox b1 = warpedBBox(H1, W, H);
     BBox b2 = warpedBBox(H2, W, H);
 
-    // One shared output similarity for both images.  In particular, do not
-    // translate the two images independently in x: that preserves scanlines
-    // but injects an arbitrary constant into every disparity.
     const double xmin = std::min(b1.xmin, b2.xmin);
     const double xmax = std::max(b1.xmax, b2.xmax);
     const double ymin = std::min(b1.ymin, b2.ymin);
@@ -170,8 +175,6 @@ static RectifyResult finalizeRectification(
         !std::isfinite(spanX) || !std::isfinite(spanY))
         throw std::runtime_error("Invalid Loop-Zhang warped bounds");
 
-    // Use one isotropic scale for both views. This keeps the aspect ratio and
-    // avoids introducing different horizontal and vertical magnification.
     const double sxFit = static_cast<double>(W) / spanX;
     const double syFit = static_cast<double>(H) / spanY;
     const double sharedScale = std::min(sxFit, syFit);
@@ -191,7 +194,6 @@ static RectifyResult finalizeRectification(
     std::cout << "[rectify] shared canvas: sx=" << sx << " sy=" << sy
               << " tx=" << tx << " ty=" << ty << "\n";
 
-    // 2. Convert back to OpenCV and warp the images
     res.H1 = eigenToCv(H1_final);
     res.H2 = eigenToCv(H2_final);
 
@@ -201,19 +203,12 @@ static RectifyResult finalizeRectification(
     cv::warpPerspective(right, res.right_rect, res.H2, sz, cv::INTER_LINEAR,
                         cv::BORDER_CONSTANT, cv::Scalar());
 
-    // Generate validity masks through the same warp operation.
     cv::Mat sourceMask(H, W, CV_8U, cv::Scalar(255));
     cv::warpPerspective(sourceMask, res.mask1, res.H1, sz, cv::INTER_NEAREST,
                         cv::BORDER_CONSTANT, cv::Scalar(0));
     cv::warpPerspective(sourceMask, res.mask2, res.H2, sz, cv::INTER_NEAREST,
                         cv::BORDER_CONSTANT, cv::Scalar(0));
 
-    // 3. Rectified projection matrices: for a planar image-space homography
-    //    H applied to an image with original projection matrix P_orig, the
-    //    projection matrix valid for the warped image is simply H * P_orig.
-    //    This is exact regardless of how distorted H1/H2 are, unlike a
-    //    calibrated-style Q matrix (which assumes a shared, pure-rotation
-    //    rectified camera model that a general projective warp doesn't have).
     Eigen::Matrix3d K0 = cvToEigen3x3(calib.K0);
     Eigen::Matrix3d K1 = cvToEigen3x3(calib.K1);
     Eigen::Matrix3d R_rel = cvToEigen3x3(calib.R_rel);
@@ -519,16 +514,16 @@ RectifyResult rectifyLoopZhang(const cv::Mat& left, const cv::Mat& right,
     Eigen::Matrix3d left_aligned = sim_left  * proj_homeography_left;
     Eigen::Matrix3d right_aligned = sim_right * proj_homeography_right;
 
-    // Reduce shape distortion without changing the rectified row coordinate.
+    // Reduce shape distortion without changing the rectified row coordinate
     Eigen::Matrix3d left_shear  = buildShear(left_aligned, W, H);
     Eigen::Matrix3d right_shear = buildShear(right_aligned, W, H);
 
-    // Compose the raw homographies before fitting them to the output canvas.
+    // Compose the raw homographies before fitting them to the output canvas
     Eigen::Matrix3d H1 = left_shear  * left_aligned;
     Eigen::Matrix3d H2 = right_shear * right_aligned;
 
-    // Place both warped views on one shared canvas. The same scale and
-    // translation are applied to both images, so row alignment is preserved.
+    // Place both warped views on one shared canvas. 
+    // The same scale and translation are applied to both images, so row alignment is preserved
     return finalizeRectification(H1, H2, left, right, calib, W, H);
 }
 
