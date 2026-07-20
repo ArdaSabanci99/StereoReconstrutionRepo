@@ -59,12 +59,45 @@ Built executables land in `build/Release/` (Windows) or `build/` (Linux/macOS):
 Results are saved to `results/scene1/` (rectified images, disparity, `.ply` point cloud).
 
 **Tested working parameters:**
-| Parameter | Value | Reason |
-|-----------|-------|--------|
-| `--scale` | `0.25` | Brings image to 400×300; expected disparity ~155px fits in ndisp |
-| `--ndisp` | `200` | Covers baseline of ~129mm at scale 0.25 |
-| `--method` | `sgm` | Best quality; also: `sad`, `ssd`, `ncc`, `census`, `bm`, `sgbm` |
-| `--light`  | `0`–`6` | DTU lighting condition (default: 0) |
+
+Rectification defaults to **OpenCV** stereo rectification. Pass `--manual-rect`
+(alias `--rect-manual`) to switch to our own Loop-Zhang closed-form rectification
+(Stage 2) — it needs a higher `--scale` to stay stable, everything else unchanged:
+
+```bash
+# OpenCV rectification (default)
+./build/pipeline <data_root> 1 1 2 --scale 0.5 --ndisp 256 --zmax 700 --no-median --method sgm
+
+# Manual Loop-Zhang rectification
+./build/pipeline <data_root> 1 1 2 --manual-rect --scale 0.75 --ndisp 256 --zmax 700 --no-median --method sgm
+```
+
+**Full CLI reference** (`src/pipeline.cpp`):
+
+| Flag | Default | Description |
+|------|---------|--------------|
+| **Dense matching** | | |
+| `--method sad\|ssd\|ncc\|census\|sgm\|bm\|sgbm` | `sgm` | Matching cost / algorithm (`bm`, `sgbm` are OpenCV baselines) |
+| `--window <size>` | `5` | Matching window size |
+| `--ndisp <n>` | `256` (at scale 1.0) | Number of disparities, scaled by `--scale` |
+| `--min-disp <n>` | scaled from `80` | Minimum disparity |
+| `--no-subpixel` | off | Disable sub-pixel parabola refinement |
+| `--no-lr` | off | Disable left-right consistency check |
+| `--no-median` | off | Disable 5×5 median post-filter |
+| **Pipeline** | | |
+| `--manual-rect` / `--rect-manual` | off (OpenCV rectification) | Use Loop-Zhang closed-form rectification |
+| `--scale <factor>` | `0.5` | Image downscale factor before matching |
+| `--zmax <mm>` | `2000` | Caps reconstructed depth to discard far-background outliers |
+| `--test-gt-pose` | off | Skip sparse matching, use DTU ground-truth pose (see [Sparse Matching Modes](#stage-1--sparse-matching)) |
+| **Sparse matching** | | |
+| `--sm-opencv` | off (manual) | Use the full OpenCV sparse-matching pipeline instead of our custom one |
+| `--sm-custom-sift` | off (`cv::SIFT`) | Manual pipeline only: use our own SIFT detector |
+| `--sm-features <N>` / `--n-features <N>` | `0` (unlimited) | Max SIFT keypoints |
+| `--sm-ratio <F>` | `0.75` | Lowe ratio test threshold |
+| `--sm-ransac <F>` | `1.0` | RANSAC Sampson distance threshold (px) |
+| **Evaluation** | | |
+| `--gt <path.pfm>` | — | Middlebury disparity ground truth for disparity-error eval |
+| `--eval-ply <reference.ply>` | — | DTU reference cloud for point-cloud (Chamfer/recall) eval |
 
 ---
 
@@ -134,6 +167,20 @@ DTU SampleSet MVS images + calibration (pos_XXX.txt)
 ## Stage 1 — Sparse Matching
 
 **Goal:** Recover relative rotation R and translation t from two uncalibrated images.
+
+### 1.0 Sparse Matching Modes
+
+`pipeline` selects between three sparse-matching modes via CLI flag; `--sm-custom-sift`
+is an add-on to the default mode, not a mode of its own:
+
+| Mode | Flag | Behaviour |
+|------|------|-----------|
+| Custom (default) | *(none)* | Our own normalised 8-point + RANSAC (§1.3–1.4); feature detection uses `cv::SIFT` unless `--sm-custom-sift` is also passed |
+| OpenCV | `--sm-opencv` | Full OpenCV sparse-matching pipeline: `cv::SIFT` + BFMatcher + `cv::findFundamentalMat` |
+| Ground-truth pose | `--test-gt-pose` | Skips sparse matching entirely and loads the DTU ground-truth relative pose; also derives GT F, so typically combined with `--manual-rect` |
+
+Add-on flag: `--sm-custom-sift` swaps in our own SIFT implementation instead of
+`cv::SIFT` — only meaningful in the default (custom) mode, ignored with `--sm-opencv`.
 
 ### 1.1 Feature Detection — SIFT
 
